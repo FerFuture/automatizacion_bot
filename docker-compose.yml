@@ -1,0 +1,21 @@
+services:
+  restobot:
+    build: .
+    container_name: restobot-whatsapp
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./.wwebjs_auth:/app/.wwebjs_auth
+      - ./tmp_audio:/app/tmp_audio
+
+  dashboard:
+    build: ./dashboard
+    container_name: restobot-dashboard
+    restart: always
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./dashboard:/app
+      - /app/node_modules
+      - ./.env:/app/.env:ro
