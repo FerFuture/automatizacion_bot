@@ -129,15 +129,29 @@ async function saveInteraction(payload) {
   }
 }
 
-async function getRecentInteractions({ restaurantId, customerNumber, botNumber, limit = 6 }) {
-  const { data, error } = await supabase
+function botNumberVariantsForQuery(botNumber) {
+  const raw = sanitizeWhatsAppId(botNumber);
+  if (!raw) return [];
+  const fromHelper = getPossibleIncomingNumbers(botNumber);
+  return [...new Set([raw, ...fromHelper.map(sanitizeWhatsAppId)])].filter(Boolean);
+}
+
+async function getRecentInteractions({ restaurantId, customerNumber, botNumber, limit = 40 }) {
+  const botVariants = botNumberVariantsForQuery(botNumber);
+  if (!botVariants.length) {
+    return [];
+  }
+
+  let query = supabase
     .from(TABLES.interactions)
-    .select("user_message, bot_response, created_at")
+    .select("user_message, bot_response, metadata, created_at")
     .eq("restaurant_id", restaurantId)
-    .eq("customer_number", sanitizeWhatsAppId(customerNumber))
-    .eq("bot_number", sanitizeWhatsAppId(botNumber))
-    .order("created_at", { ascending: false })
-    .limit(limit);
+    .eq("customer_number", sanitizeWhatsAppId(customerNumber));
+
+  query =
+    botVariants.length > 1 ? query.in("bot_number", botVariants) : query.eq("bot_number", botVariants[0]);
+
+  const { data, error } = await query.order("created_at", { ascending: false }).limit(limit);
 
   if (error) {
     throw new Error(`Error consultando historial de interacciones: ${error.message}`);

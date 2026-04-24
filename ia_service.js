@@ -38,9 +38,17 @@ function buildRestaurantContextText(context) {
   ].join("\n");
 }
 
+// Estados de interacciones que NO queremos que la IA tome como ejemplo de respuesta,
+// para que no copie frases como "estamos cerrados" una vez que ya estamos abiertos de nuevo.
+const NON_CONVERSATIONAL_STATUSES = new Set(["out_of_hours"]);
+
 function mapHistoryToMessages(history = []) {
   const messages = [];
   history.forEach((entry) => {
+    const status = entry?.metadata?.status;
+    if (status && NON_CONVERSATIONAL_STATUSES.has(status)) {
+      return;
+    }
     if (entry.user_message) {
       messages.push({ role: "user", content: entry.user_message });
     }
