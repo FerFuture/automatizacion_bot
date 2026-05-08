@@ -88,6 +88,9 @@ export default function MesaClientApp() {
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
 
+  /** URL pública del backend (`index.js`), opcional en `restaurants.metadata.mesa_api_base_url` (sin `/api/...`). */
+  const [mesaApiBaseUrl, setMesaApiBaseUrl] = useState("");
+
   const [confirmDialog, setConfirmDialog] = useState(null);
   const confirmResolverRef = useRef(null);
 
@@ -109,17 +112,23 @@ export default function MesaClientApp() {
 
   function buildMesaApiCandidates() {
     const candidates = [];
+    const pushOrderUrl = (baseRaw) => {
+      const b = String(baseRaw || "")
+        .trim()
+        .replace(/\/$/, "");
+      if (!b) return;
+      candidates.push(`${b}/api/mesa/order`);
+    };
+
+    pushOrderUrl(mesaApiBaseUrl);
+    pushOrderUrl(configuredApiBase);
+
     const origin = window.location.origin.replace(/\/$/, "");
     const host3000 = `${window.location.protocol}//${window.location.hostname}:3000`;
 
-    if (configuredApiBase) {
-      candidates.push(`${configuredApiBase.replace(/\/$/, "")}/api/mesa/order`);
-    }
-    candidates.push(`${origin}/api/mesa/order`);
-    candidates.push(`${host3000}/api/mesa/order`);
-    if (!configuredApiBase) {
-      candidates.push(`${defaultApiBase.replace(/\/$/, "")}/api/mesa/order`);
-    }
+    pushOrderUrl(origin);
+    pushOrderUrl(host3000);
+    pushOrderUrl(defaultApiBase);
     return [...new Set(candidates)];
   }
 
@@ -161,6 +170,12 @@ export default function MesaClientApp() {
         setMesaEnabled(metadataObj.mesa_qr_enabled !== false);
         setCashEnabled(data.cash_enabled !== false);
         setMpEnabled(data.mercadopago_enabled !== false);
+
+        const metaBase =
+          typeof metadataObj.mesa_api_base_url === "string"
+            ? metadataObj.mesa_api_base_url.trim().replace(/\/$/, "")
+            : "";
+        setMesaApiBaseUrl(metaBase);
       } catch (e) {
         setError(`Error cargando restaurante: ${e?.message || e}`);
       }
@@ -273,9 +288,9 @@ export default function MesaClientApp() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
           });
-          // Si la base no tiene este endpoint (404) o está caída aguas arriba (502/503/504),
+          // Si la base no tiene este endpoint (404/405 en SPA) o está caída (502/503/504),
           // probamos el siguiente candidato.
-          if ([404, 502, 503, 504].includes(probe.status)) continue;
+          if ([404, 405, 502, 503, 504].includes(probe.status)) continue;
           res = probe;
           break;
         } catch (err) {
