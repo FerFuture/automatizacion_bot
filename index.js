@@ -215,10 +215,13 @@ const mesaApiServer = http.createServer(async (req, res) => {
     const resolvedItems = [];
     let totalAmount = 0;
     for (const it of items) {
-      const name = String(it || "").trim();
+      const name =
+        typeof it === "string"
+          ? String(it || "").trim()
+          : String(it?.name || it?.title || "").trim();
       const mi = menuByName.get(name);
       if (!mi) return sendJson(res, 400, { error: `Producto no disponible: ${name}` });
-      resolvedItems.push(mi.name);
+      resolvedItems.push({ name: mi.name, price: mi.price });
       totalAmount += mi.price;
     }
 
@@ -1448,7 +1451,11 @@ function buildAddMoreQuestion(details, totalAmount) {
 
 function formatOrderDetailsForDisplay(items, fallbackDetails) {
   const names = (Array.isArray(items) ? items : [])
-    .map((n) => String(n || "").trim())
+    .map((n) => {
+      if (typeof n === "string") return String(n || "").trim();
+      if (n && typeof n === "object") return String(n.name || n.title || "").trim();
+      return "";
+    })
     .filter(Boolean);
   if (!names.length) {
     return String(fallbackDetails || "tu pedido").trim() || "tu pedido";
@@ -1473,6 +1480,31 @@ function formatOrderDetailsForDisplay(items, fallbackDetails) {
       return qty > 1 ? `${name} x${qty}` : name;
     })
     .join(", ");
+}
+
+function withItemPrices(items, menuItems) {
+  const priceByName = new Map(
+    (Array.isArray(menuItems) ? menuItems : [])
+      .map((mi) => {
+        const name = String(mi?.name || "").trim();
+        const price = Number(mi?.price);
+        return [name, price];
+      })
+      .filter(([name, price]) => name && Number.isFinite(price) && price > 0)
+  );
+
+  const out = [];
+  for (const raw of Array.isArray(items) ? items : []) {
+    const name =
+      typeof raw === "string"
+        ? String(raw || "").trim()
+        : String(raw?.name || raw?.title || "").trim();
+    if (!name) continue;
+    const price = priceByName.get(name);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    out.push({ name, price });
+  }
+  return out;
 }
 
 /** Palabras que empiezan como "carta" pero no son pedido de menú (evita falsos positivos en fuzzy). */
@@ -3212,13 +3244,29 @@ async function handleTextMessage(message, restaurantContext, tenant, customerNum
     const isLocal = session.fulfillmentType === "local";
     const isMesa = session.fulfillmentType === "mesa";
     const customerPhone = await resolveCustomerPhone(message, client);
+    const sessionItems = session.items?.length ? session.items : [session.details];
+    const pricedOrderItems = withItemPrices(sessionItems, menuItems);
+    if (!pricedOrderItems.length) {
+      const missingItemsReply =
+        "No pude validar los productos del pedido con el menú actual. Revisá los productos y volvé a cerrar el pedido.";
+      await saveInteraction({
+        restaurantId: tenant.id,
+        customerNumber,
+        botNumber,
+        messageType: "text",
+        userMessage: text,
+        botResponse: missingItemsReply,
+        metadata: { paymentChoice: "invalid_items_for_checkout" }
+      });
+      return missingItemsReply;
+    }
     const baseOrderPayload = {
       restaurantId: tenant.id,
       customerNumber,
       customerChatId,
       customerPhone,
       botNumber,
-      items: session.items?.length ? session.items : [session.details],
+      items: pricedOrderItems,
       address: session.deliveryAddress || null,
       rawRequest: session.conversationText,
       totalAmount: session.totalAmount

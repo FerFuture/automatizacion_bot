@@ -25,15 +25,16 @@ function orderFromWaiterPanel(order) {
 }
 
 function buildCartLines(cartById, menuById) {
-  const names = [];
+  const lines = [];
   for (const [id, qty] of Object.entries(cartById)) {
     const item = menuById.get(id);
     if (!item || qty < 1) continue;
-    const label = String(item.name || "").trim();
-    if (!label) continue;
-    for (let i = 0; i < qty; i += 1) names.push(label);
+    const name = String(item.name || "").trim();
+    const price = Number(item.price);
+    if (!name || !Number.isFinite(price) || price <= 0) continue;
+    for (let i = 0; i < qty; i += 1) lines.push({ name, price });
   }
-  return names;
+  return lines;
 }
 
 function cartTotal(cartById, menuById) {
