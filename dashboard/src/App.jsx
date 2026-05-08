@@ -5,10 +5,11 @@ import AdminApp from "./screens/AdminApp";
 import DeliveryApp from "./screens/DeliveryApp";
 import KitchenApp from "./screens/KitchenApp";
 import WaiterApp from "./screens/WaiterApp";
+import MesaClientApp from "./screens/MesaClientApp";
 import { getSession, logout } from "./lib/auth";
 
 function homePathForRole(role) {
-  if (role === "admin") return "/admin";
+  if (role === "admin" || role === "maestro") return "/admin";
   if (role === "delivery") return "/delivery";
   if (role === "kitchen") return "/kitchen";
   if (role === "waiter") return "/waiter";
@@ -32,6 +33,7 @@ function AppRoutes() {
 
   return (
     <Routes>
+      <Route path="/carta" element={<MesaClientApp />} />
       <Route
         path="/login"
         element={
@@ -47,7 +49,7 @@ function AppRoutes() {
         element={
           !session ? (
             <Navigate to="/login" replace />
-          ) : session.role !== "admin" ? (
+          ) : session.role !== "admin" && session.role !== "maestro" ? (
             <Navigate to={homePathForRole(session.role)} replace />
           ) : (
             <AdminApp onLogout={handleLogout} />

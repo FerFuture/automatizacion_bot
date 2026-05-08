@@ -1,21 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getSession } from "../lib/auth";
+import { fetchRestaurantForDashboard } from "../lib/restaurantTenant";
 import {
   currency,
   formatDateTime,
+  formatOrderStatusLabelEs,
   groupOrderItemRows,
-  isDeliveryOrder,
-  normalizeOrderStatus,
-  orderKitchenReady,
-  paymentIsApproved,
-  paymentMethodKey,
   playNotification,
   subtotalForOrder,
   tableNumberLabel
 } from "../lib/format";
 
 const HISTORY_HOURS = 18;
+/** El contador del tab "Pedidos realizados" se oculta tras este tiempo (ms). */
+const PEDIDOS_REALIZADOS_BADGE_MS = 60_000;
+
+/** Pedido originado en el panel Mozo (notas típicas), sin usar solo payment_method. */
+function orderFromWaiterPanel(order) {
+  const notes = String(order?.notes || "").trim();
+  if (/^Mozo\s*·\s*Mesa:/i.test(notes)) return true;
+  if (/Origen:\s*mozo\b/i.test(notes)) return true;
+  return false;
+}
 
 function buildCartLines(cartById, menuById) {
   const names = [];
@@ -55,11 +62,12 @@ export default function WaiterApp({ onLogout }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("order");
-  const [savingOrderId, setSavingOrderId] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const confirmResolverRef = useRef(null);
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
+  /** Oculta el numerito del tab tras 1 min (se reinicia si cambia la cantidad del día). */
+  const [hidePedidosRealizadosBadge, setHidePedidosRealizadosBadge] = useState(false);
 
   const menuById = useMemo(() => {
     const m = new Map();
@@ -89,14 +97,7 @@ export default function WaiterApp({ onLogout }) {
 
   useEffect(() => {
     async function loadRestaurant() {
-      const configuredBotNumber = (import.meta.env.VITE_BOT_WHATSAPP_NUMBER || "").replace(/\D/g, "");
-      let query = supabase.from("restaurants").select("id, name, whatsapp_number");
-      if (configuredBotNumber) {
-        query = query.eq("whatsapp_number", configuredBotNumber);
-      } else {
-        query = query.limit(1);
-      }
-      const { data, error: queryError } = await query.maybeSingle();
+      const { data, error: queryError } = await fetchRestaurantForDashboard(supabase);
       if (queryError) {
         setError(`Error resolviendo restaurante: ${queryError.message}`);
         return;
@@ -121,7 +122,7 @@ export default function WaiterApp({ onLogout }) {
         .from("menu_items")
         .select("id, name, price, category")
         .eq("restaurant_id", restaurantId)
-        .order("category", { ascending: true })
+        .eq("available", true)
         .order("name", { ascending: true });
       if (!active) return;
       if (queryError) {
@@ -188,13 +189,49 @@ export default function WaiterApp({ onLogout }) {
     };
   }, [restaurantId]);
 
-  const readyForHandoff = useMemo(() => {
-    return orders.filter((o) => {
-      const st = normalizeOrderStatus(o);
-      if (st === "delivered" || st === "cancelled") return false;
-      return st === "confirmed" && orderKitchenReady(o);
-    });
+  /** Usuario de BD o texto corto si entraron solo con contraseña de rol (.env). */
+  const waiterIdentityLabel = useMemo(() => {
+    const s = getSession();
+    if (!s) return "";
+    if (s.username) return s.username;
+    if (s.loginSource === "env") return "Acceso mozo (sin usuario)";
+    return "Mozo";
+  }, []);
+
+  /** Pedidos cargados desde este panel hoy (hora local del dispositivo). Con usuario en BD, solo los propios. */
+  const myOrdersToday = useMemo(() => {
+    const s = getSession();
+    const userTag = s?.username ? String(s.username).trim().toLowerCase() : "";
+
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+    const dayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+
+    return orders
+      .filter((o) => {
+        if (!orderFromWaiterPanel(o)) return false;
+        const t = new Date(o.created_at).getTime();
+        if (Number.isNaN(t) || t < dayStart || t > dayEnd) return false;
+        if (!userTag) return true;
+        return String(o.notes || "")
+          .toLowerCase()
+          .includes(` · mozo: ${userTag}`);
+      })
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [orders]);
+
+  useEffect(() => {
+    if (myOrdersToday.length === 0) {
+      setHidePedidosRealizadosBadge(false);
+      return undefined;
+    }
+    setHidePedidosRealizadosBadge(false);
+    const id = window.setTimeout(
+      () => setHidePedidosRealizadosBadge(true),
+      PEDIDOS_REALIZADOS_BADGE_MS
+    );
+    return () => window.clearTimeout(id);
+  }, [myOrdersToday.length]);
 
   function requestConfirm({
     title = "Confirmar acción",
@@ -215,124 +252,6 @@ export default function WaiterApp({ onLogout }) {
     confirmResolverRef.current = null;
     setConfirmDialog(null);
     if (typeof resolver === "function") resolver(Boolean(value));
-  }
-
-  async function applyDelivered(order) {
-    const st = normalizeOrderStatus(order);
-    if (st === "delivered" || st === "cancelled") {
-      return { ok: false, reason: "closed" };
-    }
-    const nowIso = new Date().toISOString();
-    const patch = {
-      status: "delivered",
-      delivered_at: nowIso
-    };
-    const cashPending = paymentMethodKey(order) === "cash" && !paymentIsApproved(order);
-    if (cashPending) {
-      patch.payment_status = "paid";
-      patch.payment_paid_at = nowIso;
-    }
-
-    const { data: updatedRow, error: updateError } = await supabase
-      .from("orders")
-      .update(patch)
-      .eq("id", order.id)
-      .neq("status", "delivered")
-      .neq("status", "cancelled")
-      .select("*")
-      .maybeSingle();
-
-    if (updateError) {
-      return { ok: false, error: updateError.message };
-    }
-    if (!updatedRow) {
-      return { ok: false, reason: "stale" };
-    }
-    return { ok: true, updatedRow };
-  }
-
-  async function markDelivered(order) {
-    const st = normalizeOrderStatus(order);
-    if (st === "delivered" || st === "cancelled") {
-      setError("Este pedido ya está cerrado.");
-      return;
-    }
-    const cashOnDelivery = paymentMethodKey(order) === "cash" && !paymentIsApproved(order);
-    const ok = await requestConfirm({
-      title: cashOnDelivery ? "Cobrado y entregado" : "Marcar entregado",
-      message: cashOnDelivery
-        ? "¿Confirmás que cobraste en efectivo en mesa y entregaste el pedido?"
-        : "¿Confirmás que el pedido ya fue entregado en mesa?",
-      confirmLabel: cashOnDelivery ? "Sí, cobrado y entregado" : "Sí, marcar entregado",
-      cancelLabel: "Volver",
-      tone: "info"
-    });
-    if (!ok) return;
-
-    setError("");
-    setSavingOrderId(order.id);
-    const result = await applyDelivered(order);
-    setSavingOrderId(null);
-
-    if (!result.ok) {
-      if (result.reason === "closed") {
-        setError("Este pedido ya está cerrado.");
-      } else if (result.reason === "stale") {
-        setError("No se pudo marcar como entregado (el pedido cambió de estado). Refrescá la lista.");
-      } else {
-        setError(`Error al marcar entregado: ${result.error || "desconocido"}`);
-      }
-      return;
-    }
-    setOrders((prev) =>
-      prev.map((row) => (row.id === result.updatedRow.id ? { ...row, ...result.updatedRow } : row))
-    );
-  }
-
-  async function markAllDelivered() {
-    const list = [...readyForHandoff];
-    if (list.length === 0) return;
-
-    const anyCashPending = list.some(
-      (o) => paymentMethodKey(o) === "cash" && !paymentIsApproved(o)
-    );
-    const ok = await requestConfirm({
-      title: "Entregar todos",
-      message:
-        list.length === 1
-          ? anyCashPending
-            ? "¿Marcar este pedido como entregado? Si el pago en mesa era efectivo pendiente, también se registrará el cobro."
-            : "¿Marcar este pedido como entregado?"
-          : anyCashPending
-            ? `¿Marcar como entregados los ${list.length} pedidos listos? Donde el pago era efectivo pendiente, se registrará también el cobro.`
-            : `¿Marcar como entregados los ${list.length} pedidos listos?`,
-      confirmLabel: "Sí, entregar todos",
-      cancelLabel: "Volver",
-      tone: "info"
-    });
-    if (!ok) return;
-
-    setError("");
-    let failures = 0;
-    for (const order of list) {
-      setSavingOrderId(order.id);
-      const result = await applyDelivered(order);
-      if (result.ok && result.updatedRow) {
-        setOrders((prev) =>
-          prev.map((row) =>
-            row.id === result.updatedRow.id ? { ...row, ...result.updatedRow } : row
-          )
-        );
-      } else {
-        failures += 1;
-      }
-    }
-    setSavingOrderId(null);
-    if (failures > 0) {
-      setError(
-        `No se pudieron actualizar ${failures} de ${list.length} pedido(s). Refrescá si hace falta.`
-      );
-    }
   }
 
   function addToCart(itemId) {
@@ -395,7 +314,7 @@ export default function WaiterApp({ onLogout }) {
       setOrders((prev) => [data, ...prev.filter((o) => o.id !== data.id)]);
       setCartById({});
       setTableNumber("");
-      setTab("ready");
+      setTab("history");
       setToast("Listo · enviado a cocina");
     }
     setSubmitting(false);
@@ -487,7 +406,19 @@ export default function WaiterApp({ onLogout }) {
       if (!byCat.has(cat)) byCat.set(cat, []);
       byCat.get(cat).push(it);
     }
-    return Array.from(byCat.entries());
+    const entries = Array.from(byCat.entries()).map(([cat, items]) => [
+      cat,
+      [...items].sort((a, b) =>
+        String(a.name || "").localeCompare(String(b.name || ""), "es", {
+          sensitivity: "base",
+          numeric: true
+        })
+      )
+    ]);
+    entries.sort((a, b) =>
+      String(a[0]).localeCompare(String(b[0]), "es", { sensitivity: "base", numeric: true })
+    );
+    return entries;
   }, [menuItems]);
 
   return (
@@ -496,6 +427,9 @@ export default function WaiterApp({ onLogout }) {
         <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div>
             <h1 className="text-lg font-semibold text-white">Mozo</h1>
+            {waiterIdentityLabel ? (
+              <p className="text-xs font-medium text-slate-200">{waiterIdentityLabel}</p>
+            ) : null}
             <p className="text-xs text-slate-400">{restaurantName || "…"}</p>
           </div>
           <button
@@ -520,17 +454,17 @@ export default function WaiterApp({ onLogout }) {
           </button>
           <button
             type="button"
-            onClick={() => setTab("ready")}
+            onClick={() => setTab("history")}
             className={`relative flex-1 rounded-lg py-2 text-sm font-medium ${
-              tab === "ready"
+              tab === "history"
                 ? "bg-emerald-500/20 text-emerald-200"
                 : "text-slate-400 hover:bg-slate-800/60"
             }`}
           >
-            Listos para entregar
-            {readyForHandoff.length > 0 ? (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-bold text-slate-950">
-                {readyForHandoff.length}
+            Pedidos realizados
+            {myOrdersToday.length > 0 && !hidePedidosRealizadosBadge ? (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-bold text-slate-950">
+                {myOrdersToday.length}
               </span>
             ) : null}
           </button>
@@ -647,51 +581,37 @@ export default function WaiterApp({ onLogout }) {
           </div>
         ) : (
           <div className="space-y-3">
-            {readyForHandoff.length === 0 ? (
+            <p className="text-xs text-slate-500">
+              {getSession()?.username
+                ? "Pedidos que cargaste hoy desde este dispositivo (hora local)."
+                : "Pedidos mozo registrados hoy con esta sesión (incluye todos los mozos si entraron solo con contraseña compartida)."}
+            </p>
+            {myOrdersToday.length === 0 ? (
               <p className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-slate-400">
-                No hay pedidos listos para retirar en mesa todavía.
+                Todavía no hay pedidos mozo registrados hoy.
               </p>
             ) : (
-              <>
-                {readyForHandoff.length > 1 ? (
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      disabled={savingOrderId !== null}
-                      onClick={() => markAllDelivered()}
-                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-500 disabled:opacity-50"
-                    >
-                      Entregar todos ({readyForHandoff.length})
-                    </button>
-                  </div>
-                ) : null}
-                {readyForHandoff.map((order) => {
+              myOrdersToday.map((order) => {
                 const mesa = tableNumberLabel(order);
                 const rows = groupOrderItemRows(order);
-                const cashPending =
-                  paymentMethodKey(order) === "cash" && !paymentIsApproved(order);
-                const saving = savingOrderId === order.id;
                 return (
                   <article
                     key={order.id}
-                    className="rounded-xl border border-emerald-500/25 bg-slate-900/70 p-4"
+                    className="rounded-xl border border-slate-700/80 bg-slate-900/70 p-4"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
                         <p className="font-mono text-xs text-slate-500">
-                          #{String(order.id).slice(0, 8)} · listo{" "}
-                          {formatDateTime(order.kitchen_ready_at)}
+                          #{String(order.id).slice(0, 8)} · {formatDateTime(order.created_at)}
                         </p>
                         {mesa ? (
-                          <p className="mt-2 text-2xl font-bold text-emerald-200">Mesa {mesa}</p>
+                          <p className="mt-2 text-xl font-bold text-slate-100">Mesa {mesa}</p>
                         ) : (
-                          <p className="mt-2 text-sm text-slate-400">
-                            {isDeliveryOrder(order) ? "Delivery" : "Sin mesa en sistema"}
-                          </p>
+                          <p className="mt-2 text-sm text-slate-400">Sin mesa en sistema</p>
                         )}
                       </div>
-                      <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs text-emerald-200">
-                        Listo cocina
+                      <span className="shrink-0 rounded-full bg-slate-700/80 px-2 py-0.5 text-xs text-slate-200">
+                        {formatOrderStatusLabelEs(order)}
                       </span>
                     </div>
                     <ul className="mt-3 space-y-0.5 text-sm text-slate-200">
@@ -705,24 +625,9 @@ export default function WaiterApp({ onLogout }) {
                     <p className="mt-2 text-xs text-slate-500">
                       Total: {currency(subtotalForOrder(order))}
                     </p>
-                    <div className="mt-4 flex flex-wrap justify-end gap-2">
-                      <button
-                        type="button"
-                        disabled={savingOrderId !== null}
-                        onClick={() => markDelivered(order)}
-                        className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
-                      >
-                        {saving
-                          ? "Guardando…"
-                          : cashPending
-                            ? "Cobrado y entregado"
-                            : "Marcar entregado"}
-                      </button>
-                    </div>
                   </article>
                 );
-              })}
-              </>
+              })
             )}
           </div>
         )}

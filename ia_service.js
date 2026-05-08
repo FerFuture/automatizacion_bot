@@ -146,6 +146,8 @@ function cacheSignatureForContext(context) {
     restaurant.opening_hours || "",
     restaurant.address || "",
     restaurant.delivery_zones || "",
+    restaurant.delivery_enabled === false ? "0" : "1",
+    restaurant.table_count != null ? String(restaurant.table_count) : "",
     restaurant.public_name || "",
     typeof restaurant.policies === "string" ? restaurant.policies : JSON.stringify(restaurant.policies || ""),
     menuKey
@@ -231,6 +233,7 @@ function buildRestaurantContextText(context) {
   }
 
   const { restaurant, menuItems } = context;
+  const deliveryPaused = restaurant.delivery_enabled === false;
   const openingHours = String(restaurant.opening_hours || "").trim() || "No informado";
   const address = String(restaurant.address || "").trim();
   const deliveryZones = String(restaurant.delivery_zones || "").trim();
@@ -250,8 +253,17 @@ function buildRestaurantContextText(context) {
     `Marca publica (mensajes y ticket): ${brandName}`,
     `Horario de atencion: ${openingHours}`,
     address ? `Direccion / ubicacion del local: ${address}` : "Direccion / ubicacion del local: no cargada en el sistema (no inventes una).",
-    deliveryZones ? `Zonas de delivery cubiertas: ${deliveryZones}` : "Zonas de delivery: no especificadas en el sistema.",
+    deliveryPaused
+      ? "IMPORTANTE: El restaurante NO esta tomando pedidos con delivery por ahora. Ofrecé retiro en el local o pedido en mesa (el cliente indica numero de mesa). No ofrezcas envio a domicilio ni pidas direccion de entrega."
+      : deliveryZones
+        ? `Zonas de delivery cubiertas: ${deliveryZones}`
+        : "Zonas de delivery: no especificadas en el sistema.",
     policies ? `Politicas: ${policies}` : "Politicas: sin politicas adicionales cargadas.",
+    (() => {
+      const n = Number(restaurant.table_count);
+      const maxM = Number.isFinite(n) && n >= 1 && n <= 500 ? Math.floor(n) : 12;
+      return `Pedidos en mesa: el cliente debe indicar un numero de mesa entre 1 y ${maxM}.`;
+    })(),
     "Menu:",
     formatMenu(menuItems)
   ];
@@ -442,6 +454,7 @@ async function generateAssistantResponse({
 
 async function generateOrderQuote({ conversationText, restaurantContext, chatHistory = [] }) {
   const contextText = buildRestaurantContextText(restaurantContext);
+  const deliveryPaused = restaurantContext?.restaurant?.delivery_enabled === false;
   const trimmedHistory = trimHistoryByChars(chatHistory);
   const historyMessages = mapHistoryToMessages(trimmedHistory);
   const completion = await openai.chat.completions.create({
@@ -455,8 +468,16 @@ async function generateOrderQuote({ conversationText, restaurantContext, chatHis
         content: [
           "Analiza la conversacion del cliente y arma un resumen del pedido solo con productos del menu disponible.",
           "Si el cliente pide algo fuera del menu, no lo incluyas y marca hasOrder=false si no queda ningun item valido.",
+          "EMPANADAS: en este negocio solo se venden por *media docena* y *1 docena* (items separados en el menu por sabor carne/pollo). Si piden cantidades sueltas (ej. 3 empanadas, cuarta, una empanada, cinco) sin ser 6 o 12 empanadas en formato pack, hasOrder=false y en missingItemsMessage explica que solo hay media docena o docena.",
+          "Si dicen empanadas de carne o pollo pero no aclaran si quieren media docena o una docena, hasOrder=false y en missingItemsMessage pregunta si desean media docena o una docena.",
+          "Porciones 1/2 PERSONAS: si en el menu el mismo plato aparece como '(1 persona)' y '(2 personas)' como items separados, usa solo los que figuren disponibles en la lista. Si el cliente nombra el plato sin aclarar y en la lista hay ambas opciones, hasOrder=false y en missingItemsMessage preguntá si es para 1 o 2 personas. Si en la lista solo hay una de las dos (la otra no está disponible), elegí esa sin preguntar.",
           "Si el usuario usa referencias como 'quiero dos' o 'si, quiero una', asocia esa cantidad al ultimo producto discutido en la charla.",
           "No inventes productos ni precios.",
+          ...(deliveryPaused
+            ? [
+                "IMPORTANTE: El restaurante NO acepta delivery en este momento (retiro en local y pedido en mesa). El campo deliveryAddress debe ser siempre cadena vacia. No interpretes direcciones como pedido de envio."
+              ]
+            : []),
           "Responde SOLO JSON valido con esta estructura:",
           '{"hasOrder": boolean, "details": string, "items": string[], "totalAmount": number, "deliveryAddress": string, "missingItemsMessage": string}'
         ].join(" ")
@@ -487,12 +508,16 @@ async function generateOrderQuote({ conversationText, restaurantContext, chatHis
     };
   }
 
+  const deliveryAddress = deliveryPaused
+    ? ""
+    : String(parsed.deliveryAddress || "").trim();
+
   return {
     hasOrder: Boolean(parsed.hasOrder),
     details: String(parsed.details || "").trim(),
     items: Array.isArray(parsed.items) ? parsed.items.map((item) => String(item)) : [],
     totalAmount: Number(parsed.totalAmount || 0),
-    deliveryAddress: String(parsed.deliveryAddress || "").trim(),
+    deliveryAddress,
     missingItemsMessage: String(parsed.missingItemsMessage || "").trim()
   };
 }

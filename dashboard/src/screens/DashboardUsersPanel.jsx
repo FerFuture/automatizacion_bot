@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import bcrypt from "bcryptjs";
 import { supabase } from "../supabaseClient";
 import { ROLE_LABELS } from "../lib/auth";
 import {
@@ -11,6 +10,23 @@ import {
 
 const TABLE = "dashboard_users";
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
+const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:3000`;
+const apiBase = import.meta.env.VITE_MESA_API_BASE_URL || defaultApiBase;
+const hashPasswordUrl = `${apiBase ? apiBase.replace(/\/$/, "") : ""}/api/dashboard/password/hash`;
+
+async function hashPasswordWithApi(password) {
+  const res = await fetch(hashPasswordUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: String(password || "") })
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const msg = data?.error || `Error HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return String(data?.passwordHash || "");
+}
 
 function WeekdayToggle({ value, onChange, disabled }) {
   function toggle(day) {
@@ -103,7 +119,13 @@ export default function DashboardUsersPanel() {
         return;
       }
     }
-    const hash = bcrypt.hashSync(pw, 10);
+    let hash = "";
+    try {
+      hash = await hashPasswordWithApi(pw);
+    } catch (e) {
+      setError(`No se pudo cifrar la contraseña: ${e?.message || e}`);
+      return;
+    }
     setSavingId("__new__");
     const { error: insErr } = await supabase.from(TABLE).insert({
       username: u,
@@ -181,7 +203,12 @@ export default function DashboardUsersPanel() {
         setError("La contraseña debe tener al menos 6 caracteres.");
         return;
       }
-      patch.password_hash = bcrypt.hashSync(pw, 10);
+      try {
+        patch.password_hash = await hashPasswordWithApi(pw);
+      } catch (e) {
+        setError(`No se pudo cifrar la contraseña: ${e?.message || e}`);
+        return;
+      }
     }
     setSavingId(row.id);
     const { error: upErr } = await supabase.from(TABLE).update(patch).eq("id", row.id);

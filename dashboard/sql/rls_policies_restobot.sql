@@ -19,6 +19,16 @@ drop policy if exists "restobot_restaurants_auth_select" on public.restaurants;
 create policy "restobot_restaurants_auth_select"
   on public.restaurants for select to authenticated using (true);
 
+-- UPDATE: necesario para guardar configuración (Admin → pestaña Configuración).
+-- (También definidas en restaurants_config_columns.sql; conviven por DROP IF EXISTS.)
+drop policy if exists "restobot_restaurants_anon_update" on public.restaurants;
+create policy "restobot_restaurants_anon_update"
+  on public.restaurants for update to anon using (true) with check (true);
+
+drop policy if exists "restobot_restaurants_auth_update" on public.restaurants;
+create policy "restobot_restaurants_auth_update"
+  on public.restaurants for update to authenticated using (true) with check (true);
+
 -- ---------- menu_items ----------
 alter table public.menu_items enable row level security;
 

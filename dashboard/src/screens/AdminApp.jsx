@@ -26,9 +26,19 @@ import {
 } from "../lib/format";
 import AdminStats from "./AdminStats";
 import DashboardUsersPanel from "./DashboardUsersPanel";
+import MaestroPanel from "./MaestroPanel";
+import MesaQrLinksPanel from "../components/MesaQrLinksPanel";
 import OrdersDateRangeCalendar from "../components/OrdersDateRangeCalendar";
+import { fetchRestaurantForDashboard } from "../lib/restaurantTenant";
+import { getSession } from "../lib/auth";
 
 const CANCEL_REVERT_WINDOW_MS = 30 * 60 * 1000;
+const OPENING_HOURS_SUGGESTIONS = [
+  "Lunes a Sábado de 12:00 a 23:30. Domingo cerrado.",
+  "Todos los días de 10:00 a 22:00.",
+  "Lunes a Viernes de 08:30 a 18:00.",
+  "Lunes a Domingo de 19:00 a 02:00."
+];
 
 function canRevertCancellation(order) {
   if (normalizeOrderStatus(order) !== "cancelled") return false;
@@ -43,6 +53,10 @@ function shouldShowDeliveryRepartoSection(order) {
     return false;
   }
   return true;
+}
+
+function isLocalPickupOrder(order) {
+  return String(order?.fulfillment_type ?? "").trim().toLowerCase() === "local";
 }
 
 function localDateKey(d = new Date()) {
@@ -80,7 +94,16 @@ function localDateKeyEndIso(dateKey) {
 }
 
 export default function AdminApp({ onLogout }) {
-  const [activeTab, setActiveTab] = useState("orders");
+  const session = getSession();
+  const isMaestro = session?.role === "maestro";
+
+  const [activeTab, setActiveTab] = useState(() =>
+    getSession()?.role === "maestro" ? "maestro" : "orders"
+  );
+
+  useEffect(() => {
+    if (activeTab === "maestro" && !isMaestro) setActiveTab("orders");
+  }, [activeTab, isMaestro]);
   const [orders, setOrders] = useState([]);
   const [deliveryUserLabels, setDeliveryUserLabels] = useState({});
   const ORDERS_PAGE_SIZE = 30;
@@ -107,6 +130,7 @@ export default function AdminApp({ onLogout }) {
   const [savingItemId, setSavingItemId] = useState(null);
   const [savingOrderId, setSavingOrderId] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [menuSearchQuery, setMenuSearchQuery] = useState("");
   const [addingItem, setAddingItem] = useState(false);
   const [newItem, setNewItem] = useState({
     name: "",
@@ -130,15 +154,34 @@ export default function AdminApp({ onLogout }) {
     public_name: "",
     address: "",
     delivery_zones: "",
+    /** Cantidad de mesas numeradas (1..N) para pedidos “en mesa” por WhatsApp. */
+    table_count: "12",
     opening_hours: "",
     policies: ""
   });
+  /** false = bot solo retiro; ocultar UI de delivery en admin. Por defecto true si la columna aún no existe. */
+  const [deliveryEnabled, setDeliveryEnabled] = useState(true);
+  const [localEnabled, setLocalEnabled] = useState(true);
+  const [mesaEnabled, setMesaEnabled] = useState(true);
+  const [mesaQrEnabled, setMesaQrEnabled] = useState(true);
+  const [restaurantMetadata, setRestaurantMetadata] = useState({});
+  const [cashEnabled, setCashEnabled] = useState(true);
+  const [mercadoPagoEnabled, setMercadoPagoEnabled] = useState(true);
+  const [statsEnabled, setStatsEnabled] = useState(true);
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [configFlash, setConfigFlash] = useState("");
   const [confirmDialog, setConfirmDialog] = useState(null);
   const confirmResolverRef = useRef(null);
   const ordersCalendarDayRef = useRef(localDateKey());
+
+  useEffect(() => {
+    if (activeTab === "stats" && !statsEnabled) setActiveTab("orders");
+  }, [activeTab, statsEnabled]);
+
+  useEffect(() => {
+    if (activeTab === "mesaqr" && !mesaQrEnabled) setActiveTab("orders");
+  }, [activeTab, mesaQrEnabled]);
 
   function requestConfirm({
     title = "Confirmar acción",
@@ -167,6 +210,36 @@ export default function AdminApp({ onLogout }) {
       ),
     [orders]
   );
+
+  /** Lista menú A→Z por nombre (tras alta/edición local también queda ordenada). */
+  const menuItemsAlphabetical = useMemo(
+    () =>
+      [...menuItems].sort((a, b) =>
+        String(a.name || "").localeCompare(String(b.name || ""), "es", {
+          sensitivity: "base",
+          numeric: true
+        })
+      ),
+    [menuItems]
+  );
+
+  const menuItemsFiltered = useMemo(() => {
+    const raw = String(menuSearchQuery || "").trim().toLowerCase();
+    if (!raw) return menuItemsAlphabetical;
+    const words = raw.split(/\s+/).filter(Boolean);
+    return menuItemsAlphabetical.filter((item) => {
+      const hay = [
+        item.name,
+        item.category,
+        item.description,
+        item.price != null ? String(item.price) : ""
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+  }, [menuItemsAlphabetical, menuSearchQuery]);
 
   const deliveryIssueCount = useMemo(
     () =>
@@ -330,7 +403,6 @@ export default function AdminApp({ onLogout }) {
       .from("menu_items")
       .select("*")
       .eq("restaurant_id", restaurantId)
-      .order("category", { ascending: true })
       .order("name", { ascending: true });
 
     if (queryError) {
@@ -349,7 +421,9 @@ export default function AdminApp({ onLogout }) {
     setLoadingConfig(true);
     const { data, error: queryError } = await supabase
       .from("restaurants")
-      .select("name, public_name, address, delivery_zones, opening_hours, policies")
+      .select(
+        "name, public_name, address, delivery_zones, delivery_enabled, local_enabled, mesa_enabled, cash_enabled, mercadopago_enabled, stats_enabled, table_count, opening_hours, policies, metadata"
+      )
       .eq("id", rid)
       .maybeSingle();
 
@@ -375,60 +449,147 @@ export default function AdminApp({ onLogout }) {
       public_name: data.public_name || "",
       address: data.address || "",
       delivery_zones: data.delivery_zones || "",
+      table_count:
+        data.table_count != null && data.table_count !== ""
+          ? String(data.table_count)
+          : "12",
       opening_hours: data.opening_hours || "",
       policies: policiesAsText
     });
+    const metadataObj =
+      data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
+        ? data.metadata
+        : {};
+
+    setDeliveryEnabled(data.delivery_enabled !== false);
+    setLocalEnabled(data.local_enabled !== false);
+    setMesaEnabled(data.mesa_enabled !== false);
+    setRestaurantMetadata(metadataObj);
+    setMesaQrEnabled(metadataObj.mesa_qr_enabled !== false);
+    setCashEnabled(data.cash_enabled !== false);
+    setMercadoPagoEnabled(data.mercadopago_enabled !== false);
+    setStatsEnabled(data.stats_enabled !== false);
     setLoadingConfig(false);
   }
 
   async function saveRestaurantConfig(event) {
     if (event?.preventDefault) event.preventDefault();
-    if (!restaurantId) return;
+    if (!restaurantId) {
+      setError(
+        "No hay restaurante seleccionado. Verificá BOT_WHATSAPP_NUMBER o VITE_BOT_WHATSAPP_NUMBER (.env) para que coincida con restaurants.whatsapp_number (solo dígitos o mismo formato), o que exista al menos una fila en restaurants."
+      );
+      return;
+    }
     setError("");
     setConfigFlash("");
     setSavingConfig(true);
 
+    const nameTrimmed = restaurantConfig.name.trim();
+    if (!nameTrimmed) {
+      setError("El nombre interno es obligatorio (columna name en la base de datos).");
+      setSavingConfig(false);
+      return;
+    }
+
+    const tcRaw = parseInt(String(restaurantConfig.table_count || "").trim(), 10);
+    const tableCountDb =
+      Number.isFinite(tcRaw) && tcRaw >= 1 && tcRaw <= 500 ? tcRaw : 12;
+
     const patch = {
-      name: restaurantConfig.name.trim() || null,
+      name: nameTrimmed,
       public_name: restaurantConfig.public_name.trim() || null,
       address: restaurantConfig.address.trim() || null,
       delivery_zones: restaurantConfig.delivery_zones.trim() || null,
+      table_count: tableCountDb,
       opening_hours: restaurantConfig.opening_hours.trim() || null,
       policies: restaurantConfig.policies.trim() || null
     };
 
+    // `.single()` obliga error cuando UPDATE no devuelve exactamente 1 fila (0 por RLS, UUID mal, etc.).
     const { data, error: updateError } = await supabase
       .from("restaurants")
       .update(patch)
       .eq("id", restaurantId)
-      .select("name, public_name, address, delivery_zones, opening_hours, policies")
-      .maybeSingle();
+      .select("name, public_name, address, delivery_zones, table_count, opening_hours, policies")
+      .single();
 
     if (updateError) {
-      setError(`Error guardando configuración: ${updateError.message}`);
+      const msg = updateError.message || "";
+      const code = updateError.code || "";
+      const combined = `${msg} ${code}`;
+      let hint = "";
+      if (
+        /row-level security|RLS|42501|permission denied|PGRST116|JSON object requested|No rows|0 rows/i.test(
+          combined
+        )
+      ) {
+        hint =
+          " Ejecutá en Supabase → SQL: dashboard/sql/rls_policies_restobot.sql y dashboard/sql/restaurants_config_columns.sql. Si ya aplicaste RLS, ejecutá dashboard/sql/grants_api_roles_restobot.sql (permisos anon/authenticated).";
+      } else if (/42703|column/i.test(combined)) {
+        hint = " Falta una columna en restaurants (ej. public_name). Ejecutá dashboard/sql/restaurants_config_columns.sql.";
+      } else if (/invalid.*json|jsonb|22P02/i.test(combined)) {
+        hint =
+          " El campo políticas no coincide con el tipo en la base (text vs jsonb). Ajustá el tipo de restaurants.policies o el contenido.";
+      }
+      setError(`Error guardando configuración: ${msg}${hint}`);
       setSavingConfig(false);
       return;
     }
-    if (data) {
-      const policiesAsText =
-        typeof data.policies === "string"
-          ? data.policies
-          : data.policies
-            ? JSON.stringify(data.policies, null, 2)
-            : "";
-      setRestaurantConfig({
-        name: data.name || "",
-        public_name: data.public_name || "",
-        address: data.address || "",
-        delivery_zones: data.delivery_zones || "",
-        opening_hours: data.opening_hours || "",
-        policies: policiesAsText
-      });
-      if (data.name) setRestaurantName(data.name);
+
+    if (!data) {
+      setError(
+        "No se guardó la configuración (sin fila devuelta). Revisá RLS y permisos: dashboard/sql/rls_policies_restobot.sql y dashboard/sql/grants_api_roles_restobot.sql."
+      );
+      setSavingConfig(false);
+      return;
     }
+
+    const policiesAsText =
+      typeof data.policies === "string"
+        ? data.policies
+        : data.policies
+          ? JSON.stringify(data.policies, null, 2)
+          : "";
+    setRestaurantConfig({
+      name: data.name || "",
+      public_name: data.public_name || "",
+      address: data.address || "",
+      delivery_zones: data.delivery_zones || "",
+      table_count:
+        data.table_count != null && data.table_count !== ""
+          ? String(data.table_count)
+          : "12",
+      opening_hours: data.opening_hours || "",
+      policies: policiesAsText
+    });
+    if (data.name) setRestaurantName(data.name);
+
     setConfigFlash("Configuración guardada. Los cambios se aplican en los próximos mensajes al cliente.");
     setSavingConfig(false);
     setTimeout(() => setConfigFlash(""), 6000);
+  }
+
+  async function setMesaQrModuleEnabled(nextEnabled) {
+    if (!restaurantId) {
+      setError("No hay restaurante cargado.");
+      return { ok: false };
+    }
+    setError("");
+    const nextMetadata = {
+      ...(restaurantMetadata && typeof restaurantMetadata === "object" ? restaurantMetadata : {}),
+      mesa_qr_enabled: Boolean(nextEnabled)
+    };
+    const { error: updateError } = await supabase
+      .from("restaurants")
+      .update({ metadata: nextMetadata })
+      .eq("id", restaurantId);
+    if (updateError) {
+      setError(`No se pudo guardar módulo Carta y QR mesas: ${updateError.message}`);
+      return { ok: false, error: updateError };
+    }
+    setRestaurantMetadata(nextMetadata);
+    setMesaQrEnabled(Boolean(nextEnabled));
+    return { ok: true };
   }
 
   async function updateOrderStatus(orderId, nextStatus) {
@@ -487,11 +648,11 @@ export default function AdminApp({ onLogout }) {
 
   async function requestPickupReadyNotify(order) {
     const st = normalizeOrderStatus(order);
-    if (st !== "confirmed") {
-      setError('Solo pedidos confirmados (pagados) pueden avisar “listo para retiro”.');
+    if (st === "cancelled" || st === "delivered") {
+      setError("No se puede avisar retiro en pedidos cerrados.");
       return;
     }
-    if (!fulfillmentIsPickup(order)) {
+    if (!isLocalPickupOrder(order)) {
       setError("Este aviso solo aplica a pedidos de retiro en el local.");
       return;
     }
@@ -1046,15 +1207,7 @@ export default function AdminApp({ onLogout }) {
 
   useEffect(() => {
     async function loadRestaurant() {
-      const configuredBotNumber = (import.meta.env.VITE_BOT_WHATSAPP_NUMBER || "").replace(/\D/g, "");
-      let query = supabase.from("restaurants").select("id, name, whatsapp_number");
-      if (configuredBotNumber) {
-        query = query.eq("whatsapp_number", configuredBotNumber);
-      } else {
-        query = query.limit(1);
-      }
-
-      const { data, error: restaurantError } = await query.maybeSingle();
+      const { data, error: restaurantError } = await fetchRestaurantForDashboard(supabase);
       if (restaurantError) {
         setError(`Error resolviendo restaurante: ${restaurantError.message}`);
         return;
@@ -1335,17 +1488,32 @@ export default function AdminApp({ onLogout }) {
           >
             Gestor de Menu
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("stats")}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-              activeTab === "stats"
-                ? "bg-emerald-500 text-slate-950"
-                : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
-            }`}
-          >
-            Estadísticas
-          </button>
+          {mesaQrEnabled ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("mesaqr")}
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "mesaqr"
+                  ? "bg-emerald-500 text-slate-950"
+                  : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              Carta y QR Mesas
+            </button>
+          ) : null}
+          {statsEnabled ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("stats")}
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "stats"
+                  ? "bg-emerald-500 text-slate-950"
+                  : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              Estadísticas
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setActiveTab("users")}
@@ -1368,6 +1536,19 @@ export default function AdminApp({ onLogout }) {
           >
             Configuración
           </button>
+          {isMaestro ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("maestro")}
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "maestro"
+                  ? "bg-violet-500 text-slate-950"
+                  : "border border-violet-700/60 bg-violet-950/50 text-violet-100 hover:bg-violet-900/60"
+              }`}
+            >
+              Maestro
+            </button>
+          ) : null}
         </div>
 
         {error ? (
@@ -1385,6 +1566,7 @@ export default function AdminApp({ onLogout }) {
               onReset={resetOrderFilters}
               total={ordersTotal}
               shown={orders.length}
+              deliveryEnabled={deliveryEnabled}
             />
 
             {hiddenUpdatesCount > 0 ? (
@@ -1410,7 +1592,7 @@ export default function AdminApp({ onLogout }) {
               </div>
             ) : null}
 
-            {deliveryIssueCount > 0 ? (
+            {deliveryEnabled && deliveryIssueCount > 0 ? (
               <div
                 className="flex flex-wrap items-start gap-3 rounded-xl border-2 border-rose-500 bg-gradient-to-r from-rose-950 via-rose-900/95 to-rose-950 px-4 py-4 shadow-lg shadow-rose-950/50 ring-2 ring-rose-500/40"
                 role="alert"
@@ -1460,7 +1642,7 @@ export default function AdminApp({ onLogout }) {
                       : "border border-slate-700"
                   }`}
                 >
-                  {deliveryIssueAlertOpen ? (
+                  {deliveryEnabled && deliveryIssueAlertOpen ? (
                     <div
                       className="mb-4 flex flex-col gap-3 rounded-lg border-2 border-rose-400/70 bg-rose-600/20 p-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
                       role="alert"
@@ -1559,7 +1741,9 @@ export default function AdminApp({ onLogout }) {
                       <span className="text-slate-500">Modalidad:</span>{" "}
                       {order.fulfillment_type === "local"
                         ? "Retiro local"
-                        : order.fulfillment_type || (order.address ? "delivery" : "-")}
+                        : order.fulfillment_type === "mesa"
+                          ? "Pedido en mesa"
+                          : order.fulfillment_type || (order.address ? "delivery" : "-")}
                     </p>
                     <p>
                       <span className="text-slate-500">Estado pago:</span>{" "}
@@ -1615,7 +1799,7 @@ export default function AdminApp({ onLogout }) {
                       <span className="text-slate-500">Notas:</span>{" "}
                       {adminDashboardNotesBlock(order) || "-"}
                     </p>
-                    {shouldShowDeliveryRepartoSection(order) ? (
+                    {deliveryEnabled && shouldShowDeliveryRepartoSection(order) ? (
                       <div
                         className={`md:col-span-2 rounded-lg border px-3 py-2.5 text-sm ${
                           order.delivery_claimed_by_user_id
@@ -1668,13 +1852,13 @@ export default function AdminApp({ onLogout }) {
                         ) : null}
                       </div>
                     ) : null}
-                    {order.delivery_denial_reason ? (
+                    {deliveryEnabled && order.delivery_denial_reason ? (
                       <p className="md:col-span-2 text-sm text-amber-100/90">
                         <span className="text-slate-500">Motivo cancelación delivery:</span>{" "}
                         {order.delivery_denial_reason}
                       </p>
                     ) : null}
-                    {order.delivery_issue_reason && order.delivery_issue_acknowledged_at ? (
+                    {deliveryEnabled && order.delivery_issue_reason && order.delivery_issue_acknowledged_at ? (
                       <p className="md:col-span-2 rounded-lg border border-slate-700/80 bg-slate-800/40 px-3 py-2 text-xs text-slate-400">
                         <span className="text-slate-500">Incidencia de reparto (historial):</span>{" "}
                         <span className="text-slate-300">{order.delivery_issue_reason}</span>
@@ -1696,7 +1880,7 @@ export default function AdminApp({ onLogout }) {
                       </p>
                     ) : null}
 
-                    {orderNeedsDeliveryFeeControls(order) ? (
+                    {deliveryEnabled && orderNeedsDeliveryFeeControls(order) ? (
                       <div className="md:col-span-2 space-y-3 rounded-lg border border-orange-500/35 bg-orange-950/20 p-4">
                         <p className="text-sm font-semibold text-orange-200">Esperando costo de envío</p>
                         <p className="text-xs text-slate-400">
@@ -1773,13 +1957,13 @@ export default function AdminApp({ onLogout }) {
                       </div>
                     ) : null}
 
-                    {order.status === "delivery_denied" && !order.customer_notified_at ? (
+                    {deliveryEnabled && order.status === "delivery_denied" && !order.customer_notified_at ? (
                       <div className="md:col-span-2 rounded-lg border border-amber-500/35 bg-amber-950/20 p-3 text-xs text-amber-100">
                         Se está avisando al cliente sobre la cancelación del delivery.
                       </div>
                     ) : null}
 
-                    {order.status === "delivery_denial_notify_failed" ? (
+                    {deliveryEnabled && order.status === "delivery_denial_notify_failed" ? (
                       <div className="md:col-span-2 flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-950/25 p-3">
                         <p className="text-xs text-rose-100">
                           No se pudo enviar el aviso de cancelación al cliente. Reintentá o contactá soporte si sigue
@@ -1796,13 +1980,13 @@ export default function AdminApp({ onLogout }) {
                       </div>
                     ) : null}
 
-                    {order.status === "delivery_fee_set" && !order.customer_notified_at ? (
+                    {deliveryEnabled && order.status === "delivery_fee_set" && !order.customer_notified_at ? (
                       <div className="md:col-span-2 rounded-lg border border-cyan-500/30 bg-cyan-950/20 p-3 text-xs text-cyan-100">
                         Costo confirmado. El total se envía al cliente.
                       </div>
                     ) : null}
 
-                    {order.status === "awaiting_delivery_total_confirm" ? (
+                    {deliveryEnabled && order.status === "awaiting_delivery_total_confirm" ? (
                       <div className="md:col-span-2 rounded-lg border border-indigo-500/35 bg-indigo-950/25 p-3 text-xs text-indigo-100">
                         <span className="font-semibold text-indigo-50">Efectivo + delivery:</span> el cliente ya
                         recibió el ticket con el total. Estamos esperando que responda{" "}
@@ -1883,7 +2067,7 @@ export default function AdminApp({ onLogout }) {
                               <span>
                                 <span className="font-semibold">Pedido entregado</span>
                                 {deliveredAtLabel ? ` · ${deliveredAtLabel}` : ""}
-                                {isDeliveryOrder(order) && order.delivery_claimed_by_user_id ? (
+                                {deliveryEnabled && isDeliveryOrder(order) && order.delivery_claimed_by_user_id ? (
                                   <span className="mt-0.5 block text-[11px] text-emerald-100/85">
                                     Repartidor:{" "}
                                     <span className="font-medium text-emerald-50">
@@ -1908,7 +2092,7 @@ export default function AdminApp({ onLogout }) {
                               <span>
                                 <span className="font-semibold">Pedido cancelado</span>
                                 {cancelledAtLabel ? ` · ${cancelledAtLabel}` : ""}
-                                {isDeliveryOrder(order) && order.delivery_claimed_by_user_id ? (
+                                {deliveryEnabled && isDeliveryOrder(order) && order.delivery_claimed_by_user_id ? (
                                   <span className="mt-0.5 block text-[11px] text-rose-100/85">
                                     Había tomado el pedido:{" "}
                                     <span className="font-medium text-rose-50">
@@ -1942,7 +2126,7 @@ export default function AdminApp({ onLogout }) {
                                   Confirmar pago efectivo
                                 </button>
                               ) : null}
-                              {adminShowNotifyDeliveriesReadyButton(order) ? (
+                              {deliveryEnabled && adminShowNotifyDeliveriesReadyButton(order) ? (
                                 <button
                                   type="button"
                                   disabled={savingOrderId === order.id}
@@ -1953,7 +2137,7 @@ export default function AdminApp({ onLogout }) {
                                   Avisar repartidores: pedido listo
                                 </button>
                               ) : null}
-                              {isDeliveryOrder(order) && order.delivery_ready_broadcast_at ? (
+                              {deliveryEnabled && isDeliveryOrder(order) && order.delivery_ready_broadcast_at ? (
                                 <span className="text-[11px] text-amber-200/90">
                                   Repartidores avisados
                                   {formatPaidAt(order.delivery_ready_broadcast_at)
@@ -1961,7 +2145,7 @@ export default function AdminApp({ onLogout }) {
                                     : ""}
                                 </span>
                               ) : null}
-                              {isDeliveryOrder(order) && order.delivery_claimed_by_user_id ? (
+                              {deliveryEnabled && isDeliveryOrder(order) && order.delivery_claimed_by_user_id ? (
                                 <span className="text-[11px] text-emerald-200/90">
                                   Toma el pedido:{" "}
                                   <span className="font-medium text-emerald-100">
@@ -1973,7 +2157,9 @@ export default function AdminApp({ onLogout }) {
                                     : ""}
                                 </span>
                               ) : null}
-                              {isDeliveryOrder(order) && order.delivery_en_route_customer_notified_at ? (
+                              {deliveryEnabled &&
+                              isDeliveryOrder(order) &&
+                              order.delivery_en_route_customer_notified_at ? (
                                 <span className="text-[11px] font-medium text-sky-200/95">
                                   Cliente avisado (repartidor en camino)
                                   {formatPaidAt(order.delivery_en_route_customer_notified_at)
@@ -1981,9 +2167,7 @@ export default function AdminApp({ onLogout }) {
                                     : ""}
                                 </span>
                               ) : null}
-                              {fulfillmentIsPickup(order) &&
-                              status === "confirmed" &&
-                              approved &&
+                              {isLocalPickupOrder(order) &&
                               !order.pickup_ready_customer_notified_at ? (
                                 <button
                                   type="button"
@@ -1995,14 +2179,14 @@ export default function AdminApp({ onLogout }) {
                                   Avisar: listo para retiro
                                 </button>
                               ) : null}
-                              {fulfillmentIsPickup(order) &&
+                              {isLocalPickupOrder(order) &&
                               order.pickup_ready_notify_requested_at &&
                               !order.pickup_ready_customer_notified_at ? (
                                 <span className="text-[11px] text-slate-400">
                                   Enviando aviso al cliente…
                                 </span>
                               ) : null}
-                              {fulfillmentIsPickup(order) && order.pickup_ready_customer_notified_at ? (
+                              {isLocalPickupOrder(order) && order.pickup_ready_customer_notified_at ? (
                                 <span className="text-[11px] text-emerald-200/80">
                                   Cliente avisado (retiro)
                                   {formatPaidAt(order.pickup_ready_customer_notified_at)
@@ -2060,18 +2244,38 @@ export default function AdminApp({ onLogout }) {
           </section>
         ) : activeTab === "menu" ? (
           <section className="space-y-4">
-            <div className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-900 p-4">
-              <div>
-                <h2 className="text-sm font-semibold text-slate-200">Productos del menu</h2>
-                <p className="text-xs text-slate-400">Administra precios, disponibilidad y alta de productos.</p>
+            <div className="rounded-xl border border-slate-700 bg-slate-900 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-200">Productos del menu</h2>
+                  <p className="text-xs text-slate-400">Administra precios, disponibilidad y alta de productos.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAddForm((prev) => !prev)}
+                  className="shrink-0 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950"
+                >
+                  Añadir Producto
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowAddForm((prev) => !prev)}
-                className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950"
-              >
-                Añadir Producto
-              </button>
+              <label className="mt-4 block">
+                <span className="sr-only">Buscar productos</span>
+                <input
+                  type="search"
+                  value={menuSearchQuery}
+                  onChange={(e) => setMenuSearchQuery(e.target.value)}
+                  placeholder="Buscar por nombre, categoria, descripcion o precio..."
+                  autoComplete="off"
+                  className="h-10 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                />
+              </label>
+              {menuItems.length > 0 && menuSearchQuery.trim() ? (
+                <p className="mt-2 text-xs text-slate-500">
+                  {menuItemsFiltered.length === menuItemsAlphabetical.length
+                    ? `${menuItemsAlphabetical.length} productos`
+                    : `${menuItemsFiltered.length} de ${menuItemsAlphabetical.length} productos`}
+                </p>
+              ) : null}
             </div>
 
             {showAddForm ? (
@@ -2132,8 +2336,12 @@ export default function AdminApp({ onLogout }) {
               <div className="rounded-xl border border-slate-700 bg-slate-900 p-5 text-slate-400">
                 Aun no hay items cargados en menu_items.
               </div>
+            ) : menuItemsFiltered.length === 0 ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-900 p-5 text-slate-400">
+                No hay productos que coincidan con &quot;{menuSearchQuery.trim()}&quot;. Probá otra palabra o limpiá el buscador.
+              </div>
             ) : (
-              menuItems.map((item) => (
+              menuItemsFiltered.map((item) => (
                 <article
                   key={item.id}
                   className="rounded-xl border border-slate-700 bg-slate-900 p-5"
@@ -2249,10 +2457,46 @@ export default function AdminApp({ onLogout }) {
               ))
             )}
           </section>
-        ) : activeTab === "stats" ? (
+        ) : activeTab === "mesaqr" ? (
+          <section className="space-y-4">
+            <div className="rounded-xl border border-slate-700 bg-slate-900 p-4">
+              <h2 className="text-sm font-semibold text-slate-200">Carta y QR Mesas</h2>
+              <p className="text-xs text-slate-400">
+                Administrá enlaces y QR por mesa para la carta web. Este módulo es independiente del flujo de chat.
+              </p>
+            </div>
+            <MesaQrLinksPanel
+              restaurantId={restaurantId}
+              qrModuleEnabled={mesaQrEnabled}
+              tableCount={Math.min(
+                500,
+                Math.max(1, parseInt(String(restaurantConfig.table_count || "12").trim(), 10) || 12)
+              )}
+            />
+          </section>
+        ) : activeTab === "stats" && statsEnabled ? (
           <AdminStats restaurantId={restaurantId} />
         ) : activeTab === "users" ? (
           <DashboardUsersPanel />
+        ) : activeTab === "maestro" && isMaestro ? (
+          <MaestroPanel
+            restaurantId={restaurantId}
+            deliveryEnabled={deliveryEnabled}
+            localEnabled={localEnabled}
+            mesaEnabled={mesaEnabled}
+            mesaQrEnabled={mesaQrEnabled}
+            cashEnabled={cashEnabled}
+            mercadoPagoEnabled={mercadoPagoEnabled}
+            statsEnabled={statsEnabled}
+            tableCount={Math.min(
+              500,
+              Math.max(1, parseInt(String(restaurantConfig.table_count || "12").trim(), 10) || 12)
+            )}
+            loadingRestaurant={loadingConfig}
+            onServiceFlagsUpdated={() => loadRestaurantConfig(restaurantId)}
+            onTableCountUpdated={() => loadRestaurantConfig(restaurantId)}
+            onMesaQrModuleToggle={setMesaQrModuleEnabled}
+          />
         ) : (
           <section className="space-y-4">
             <div className="rounded-xl border border-slate-700 bg-slate-900 p-5">
@@ -2324,6 +2568,7 @@ export default function AdminApp({ onLogout }) {
                 <label className="block space-y-1 text-sm">
                   <span className="text-slate-300">Horario de atención</span>
                   <input
+                    list="opening-hours-suggestions"
                     value={restaurantConfig.opening_hours}
                     onChange={(event) =>
                       setRestaurantConfig((prev) => ({
@@ -2334,29 +2579,57 @@ export default function AdminApp({ onLogout }) {
                     placeholder="Ej: Lunes a Sábado de 12:00 a 23:30. Domingos cerrado."
                     className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm"
                   />
+                  <datalist id="opening-hours-suggestions">
+                    {OPENING_HOURS_SUGGESTIONS.map((entry) => (
+                      <option key={entry} value={entry} />
+                    ))}
+                  </datalist>
                   <span className="block text-xs text-slate-500">
-                    Texto libre para cuando preguntan por el horario de atención.
+                    Usá formato sugerido (días + “HH:MM a HH:MM”) para que el bot lo interprete correctamente.
                   </span>
                 </label>
 
-                <label className="block space-y-1 text-sm">
-                  <span className="text-slate-300">Zonas de delivery</span>
-                  <textarea
-                    rows={2}
-                    value={restaurantConfig.delivery_zones}
+                <label className="block space-y-1 text-sm md:max-w-xs">
+                  <span className="text-slate-300">Mesas del salón (numeradas)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    inputMode="numeric"
+                    value={restaurantConfig.table_count}
                     onChange={(event) =>
                       setRestaurantConfig((prev) => ({
                         ...prev,
-                        delivery_zones: event.target.value
+                        table_count: event.target.value
                       }))
                     }
-                    placeholder="Ej: Centro, Godoy Cruz, Las Heras (hasta calle Paso de los Andes)"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                    className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm"
                   />
                   <span className="block text-xs text-slate-500">
-                    Lista o descripción libre de las zonas que cubrís.
+                    El bot solo acepta números de mesa entre 1 y este valor (por defecto 12). Rango permitido 1–500.
                   </span>
                 </label>
+
+                {deliveryEnabled ? (
+                  <label className="block space-y-1 text-sm">
+                    <span className="text-slate-300">Zonas de delivery</span>
+                    <textarea
+                      rows={2}
+                      value={restaurantConfig.delivery_zones}
+                      onChange={(event) =>
+                        setRestaurantConfig((prev) => ({
+                          ...prev,
+                          delivery_zones: event.target.value
+                        }))
+                      }
+                      placeholder="Ej: Centro, Godoy Cruz, Las Heras (hasta calle Paso de los Andes)"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                    />
+                    <span className="block text-xs text-slate-500">
+                      Lista o descripción libre de las zonas que cubrís.
+                    </span>
+                  </label>
+                ) : null}
 
                 <label className="block space-y-1 text-sm">
                   <span className="text-slate-300">Políticas internas</span>
@@ -2409,7 +2682,15 @@ export default function AdminApp({ onLogout }) {
   );
 }
 
-function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown }) {
+const DELIVERY_PIPELINE_ORDER_STATUSES = [
+  "awaiting_delivery_fee",
+  "delivery_fee_set",
+  "awaiting_delivery_total_confirm",
+  "delivery_denied",
+  "delivery_denial_notify_failed"
+];
+
+function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown, deliveryEnabled = true }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState(filters);
   const [draftTodayOnly, setDraftTodayOnly] = useState(todayOnly);
@@ -2422,6 +2703,20 @@ function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown })
     setDraftTodayOnly(todayOnly);
   }, [todayOnly]);
 
+  useEffect(() => {
+    if (deliveryEnabled) return;
+    setDraft((prev) => {
+      let next = prev;
+      if (DELIVERY_PIPELINE_ORDER_STATUSES.includes(prev.status)) {
+        next = { ...next, status: "all" };
+      }
+      if (prev.fulfillmentType === "delivery") {
+        next = { ...next, fulfillmentType: "all" };
+      }
+      return next === prev ? prev : next;
+    });
+  }, [deliveryEnabled]);
+
   function update(key, value) {
     setDraft((prev) => ({ ...prev, [key]: value }));
   }
@@ -2431,7 +2726,7 @@ function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown })
     onApply(draft, draftTodayOnly);
   }
 
-  const STATUS_OPTIONS = [
+  const STATUS_OPTIONS_ALL = [
     { value: "all", label: "Todos" },
     { value: "pending", label: "Pendientes" },
     { value: "awaiting_delivery_fee", label: "Esperando envío" },
@@ -2448,17 +2743,28 @@ function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown })
     { value: "cancelled", label: "Cancelados" }
   ];
 
+  const STATUS_OPTIONS = deliveryEnabled
+    ? STATUS_OPTIONS_ALL
+    : STATUS_OPTIONS_ALL.filter((o) => !DELIVERY_PIPELINE_ORDER_STATUSES.includes(o.value));
+
   const PAYMENT_OPTIONS = [
     { value: "all", label: "Todos" },
     { value: "efectivo", label: "Efectivo" },
     { value: "mercadopago", label: "Mercado Pago" }
   ];
 
-  const FULFILLMENT_OPTIONS = [
-    { value: "all", label: "Todas" },
-    { value: "delivery", label: "Delivery" },
-    { value: "local", label: "Retiro en local" }
-  ];
+  const FULFILLMENT_OPTIONS = deliveryEnabled
+    ? [
+        { value: "all", label: "Todas" },
+        { value: "delivery", label: "Delivery" },
+        { value: "local", label: "Retiro en local" },
+        { value: "mesa", label: "Pedido en mesa" }
+      ]
+    : [
+        { value: "all", label: "Todas" },
+        { value: "local", label: "Retiro en local" },
+        { value: "mesa", label: "Pedido en mesa" }
+      ];
 
   const appliedSummaryParts = [];
   if (todayOnly) {

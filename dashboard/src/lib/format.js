@@ -82,7 +82,7 @@ export function fulfillmentIsDelivery(order) {
 
 export function fulfillmentIsPickup(order) {
   const ft = String(order?.fulfillment_type ?? "").trim().toLowerCase();
-  return ft === "local";
+  return ft === "local" || ft === "mesa";
 }
 
 export function notesIndicateCustomerConfirmedDeliveryTotal(order) {
@@ -283,16 +283,15 @@ export function groupOrderItemRows(order) {
   return ord.map((name) => ({ name, count: counts.get(name) }));
 }
 
-/** Pedido en cola de cocina: confirmado, aún sin marcar listo. */
+/** Pedido que cocina debe elaborar: confirmado y aún abierto. No hace falta marcar “listo” en el panel. */
 export function orderInKitchenQueue(order) {
   const st = normalizeOrderStatus(order);
   if (st === "delivered" || st === "cancelled") return false;
   if (st !== "confirmed") return false;
-  if (order?.kitchen_ready_at) return false;
   return true;
 }
 
-/** Cocina ya marcó listo (listo para entregar / avisar). */
+/** Marca histórica si alguna vez se guardó kitchen_ready_at (p. ej. datos viejos). */
 export function orderKitchenReady(order) {
   return Boolean(order?.kitchen_ready_at);
 }
@@ -329,8 +328,9 @@ export function formatOrderNotesForDisplay(rawNotes) {
 /** Método de pago legible para cocina (pedidos del cliente). */
 export function kitchenPaymentMethodLabelEs(order) {
   const key = paymentMethodKey(order);
+  const ft = String(order?.fulfillment_type ?? "").trim().toLowerCase();
   if (key === "mp") return "Mercado Pago";
-  if (key === "cash") return "Efectivo al recibir";
+  if (key === "cash") return ft === "mesa" ? "Efectivo en la mesa" : "Efectivo al recibir";
   const raw = String(order?.payment_method ?? "").trim();
   return raw || "—";
 }
@@ -354,6 +354,12 @@ export function kitchenMetaBoxContent(order) {
   }
   const digits = callableCustomerPhone(order);
   const phone = digits ? formatPhoneLabel(digits) : "—";
+  const ft = String(order?.fulfillment_type ?? "").trim().toLowerCase();
+  if (ft === "mesa") {
+    const mesa = tableNumberLabel(order);
+    const pay = kitchenPaymentMethodLabelEs(order);
+    return `Mesa: ${mesa || "—"} | Teléfono: ${phone} | Pago: ${pay}`;
+  }
   return `Teléfono: ${phone} | Retiro en local`;
 }
 
