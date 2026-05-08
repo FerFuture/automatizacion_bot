@@ -11,15 +11,43 @@ import {
 const TABLE = "dashboard_users";
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
 const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:3000`;
-const apiBase = import.meta.env.VITE_MESA_API_BASE_URL || defaultApiBase;
-const hashPasswordUrl = `${apiBase ? apiBase.replace(/\/$/, "") : ""}/api/dashboard/password/hash`;
+const configuredApiBase = String(import.meta.env.VITE_MESA_API_BASE_URL || "").trim();
+
+function hashApiCandidates() {
+  const origin = window.location.origin.replace(/\/$/, "");
+  const host3000 = `${window.location.protocol}//${window.location.hostname}:3000`;
+  const out = [];
+  if (configuredApiBase) out.push(`${configuredApiBase.replace(/\/$/, "")}/api/dashboard/password/hash`);
+  out.push(`${origin}/api/dashboard/password/hash`);
+  out.push(`${host3000}/api/dashboard/password/hash`);
+  if (!configuredApiBase) out.push(`${defaultApiBase.replace(/\/$/, "")}/api/dashboard/password/hash`);
+  return [...new Set(out)];
+}
 
 async function hashPasswordWithApi(password) {
-  const res = await fetch(hashPasswordUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password: String(password || "") })
-  });
+  const payload = { password: String(password || "") };
+  const candidates = hashApiCandidates();
+  let res = null;
+  let lastNetworkError = null;
+  for (const candidate of candidates) {
+    try {
+      const probe = await fetch(candidate, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if ([404, 502, 503, 504].includes(probe.status)) continue;
+      res = probe;
+      break;
+    } catch (err) {
+      lastNetworkError = err;
+    }
+  }
+  if (!res) {
+    throw new Error(
+      `No se pudo conectar con API de hash (${candidates.join(" | ")}). ${lastNetworkError?.message || ""}`
+    );
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const msg = data?.error || `Error HTTP ${res.status}`;

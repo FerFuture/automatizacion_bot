@@ -22,18 +22,46 @@ export const ROLE_LABELS = {
 
 const DASHBOARD_USERS_TABLE = "dashboard_users";
 const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:3000`;
-const apiBase = import.meta.env.VITE_MESA_API_BASE_URL || defaultApiBase;
-const verifyPasswordUrl = `${apiBase ? apiBase.replace(/\/$/, "") : ""}/api/dashboard/password/verify`;
+const configuredApiBase = String(import.meta.env.VITE_MESA_API_BASE_URL || "").trim();
+
+function verifyApiCandidates() {
+  const origin = window.location.origin.replace(/\/$/, "");
+  const host3000 = `${window.location.protocol}//${window.location.hostname}:3000`;
+  const out = [];
+  if (configuredApiBase) out.push(`${configuredApiBase.replace(/\/$/, "")}/api/dashboard/password/verify`);
+  out.push(`${origin}/api/dashboard/password/verify`);
+  out.push(`${host3000}/api/dashboard/password/verify`);
+  if (!configuredApiBase) out.push(`${defaultApiBase.replace(/\/$/, "")}/api/dashboard/password/verify`);
+  return [...new Set(out)];
+}
 
 async function verifyPasswordWithApi(password, passwordHash) {
-  const res = await fetch(verifyPasswordUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      password: String(password || ""),
-      passwordHash: String(passwordHash || "")
-    })
-  });
+  const payload = {
+    password: String(password || ""),
+    passwordHash: String(passwordHash || "")
+  };
+  const candidates = verifyApiCandidates();
+  let res = null;
+  let lastNetworkError = null;
+  for (const candidate of candidates) {
+    try {
+      const probe = await fetch(candidate, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if ([404, 502, 503, 504].includes(probe.status)) continue;
+      res = probe;
+      break;
+    } catch (err) {
+      lastNetworkError = err;
+    }
+  }
+  if (!res) {
+    throw new Error(
+      `No se pudo conectar con API de autenticación (${candidates.join(" | ")}). ${lastNetworkError?.message || ""}`
+    );
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const msg = data?.error || `Error HTTP ${res.status}`;

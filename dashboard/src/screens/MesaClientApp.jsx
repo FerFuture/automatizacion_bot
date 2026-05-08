@@ -51,6 +51,7 @@ function groupMenuByCategory(menuItems) {
 }
 
 const MESA_QR_TOKEN_REQUIRED = true;
+const API_REQUEST_TIMEOUT_MS = 3500;
 
 export default function MesaClientApp() {
   const { tableNumber } = useParams();
@@ -104,8 +105,33 @@ export default function MesaClientApp() {
   const groupedMenu = useMemo(() => groupMenuByCategory(menuItems), [menuItems]);
 
   const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:3000`;
-  const apiBase = import.meta.env.VITE_MESA_API_BASE_URL || defaultApiBase;
-  const apiUrl = `${apiBase ? apiBase.replace(/\/$/, "") : ""}/api/mesa/order`;
+  const configuredApiBase = String(import.meta.env.VITE_MESA_API_BASE_URL || "").trim();
+
+  function buildMesaApiCandidates() {
+    const candidates = [];
+    const origin = window.location.origin.replace(/\/$/, "");
+    const host3000 = `${window.location.protocol}//${window.location.hostname}:3000`;
+
+    if (configuredApiBase) {
+      candidates.push(`${configuredApiBase.replace(/\/$/, "")}/api/mesa/order`);
+    }
+    candidates.push(`${origin}/api/mesa/order`);
+    candidates.push(`${host3000}/api/mesa/order`);
+    if (!configuredApiBase) {
+      candidates.push(`${defaultApiBase.replace(/\/$/, "")}/api/mesa/order`);
+    }
+    return [...new Set(candidates)];
+  }
+
+  async function fetchWithTimeout(url, options, timeoutMs = API_REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
 
   const availablePaymentChoices = useMemo(() => {
     const options = [];
@@ -230,17 +256,43 @@ export default function MesaClientApp() {
     setPaymentLink(null);
     setSubmitting(true);
     try {
-      const res = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          restaurantId,
-          tableNumber: tableNum,
-          paymentMethod: paymentChoice,
-          items: cartLines,
-          mesaToken: mesaTokenFromUrl || ""
-        })
-      });
+      const payload = {
+        restaurantId,
+        tableNumber: tableNum,
+        paymentMethod: paymentChoice,
+        items: cartLines,
+        mesaToken: mesaTokenFromUrl || ""
+      };
+      const apiCandidates = buildMesaApiCandidates();
+      let res = null;
+      let lastNetworkError = null;
+      for (const candidate of apiCandidates) {
+        try {
+          const probe = await fetchWithTimeout(candidate, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          // Si la base no tiene este endpoint (404) o está caída aguas arriba (502/503/504),
+          // probamos el siguiente candidato.
+          if ([404, 502, 503, 504].includes(probe.status)) continue;
+          res = probe;
+          break;
+        } catch (err) {
+          if (err?.name === "AbortError") {
+            lastNetworkError = new Error(`Timeout de conexión (${API_REQUEST_TIMEOUT_MS}ms) en ${candidate}`);
+          } else {
+            lastNetworkError = err;
+          }
+        }
+      }
+      if (!res) {
+        throw new Error(
+          `No se pudo conectar con la API. Revisá URL base/puertos (${apiCandidates.join(" | ")}). ${
+            lastNetworkError?.message || ""
+          }`
+        );
+      }
 
       const data = await res.json().catch(() => null);
       if (!res.ok) {
