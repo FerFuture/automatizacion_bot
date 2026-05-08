@@ -51,7 +51,8 @@ function groupMenuByCategory(menuItems) {
 }
 
 const MESA_QR_TOKEN_REQUIRED = true;
-const API_REQUEST_TIMEOUT_MS = 3500;
+/** Pedido a cocina puede ir por proxy Vercel → VPS; algo más alto que antes. */
+const API_REQUEST_TIMEOUT_MS = 15000;
 
 export default function MesaClientApp() {
   const { tableNumber } = useParams();
@@ -110,25 +111,48 @@ export default function MesaClientApp() {
   const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:3000`;
   const configuredApiBase = String(import.meta.env.VITE_MESA_API_BASE_URL || "").trim();
 
+  function mesaApiBaseAllowedFromBrowser(baseRaw) {
+    const b = String(baseRaw || "").trim();
+    if (!b) return false;
+    if (!window.isSecureContext) return true;
+    try {
+      const u = new URL(b.includes("://") ? b : `https://${b}`);
+      if (u.protocol !== "http:") return true;
+      const h = u.hostname.toLowerCase();
+      return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+    } catch {
+      return false;
+    }
+  }
+
+  /** En Vercel no existe puerto :3000 en el mismo hostname; evita timeouts inútiles. */
+  function port3000FallbackLikelyUseless() {
+    const h = String(window.location.hostname || "").toLowerCase();
+    return h.endsWith(".vercel.app") || h.endsWith(".netlify.app");
+  }
+
   function buildMesaApiCandidates() {
     const candidates = [];
     const pushOrderUrl = (baseRaw) => {
       const b = String(baseRaw || "")
         .trim()
         .replace(/\/$/, "");
-      if (!b) return;
+      if (!b || !mesaApiBaseAllowedFromBrowser(b)) return;
       candidates.push(`${b}/api/mesa/order`);
     };
 
+    const origin = window.location.origin.replace(/\/$/, "");
+
+    // 1) Mismo origen (proxy /api/mesa/order en Vercel o backend embebido).
+    pushOrderUrl(origin);
     pushOrderUrl(mesaApiBaseUrl);
     pushOrderUrl(configuredApiBase);
 
-    const origin = window.location.origin.replace(/\/$/, "");
     const host3000 = `${window.location.protocol}//${window.location.hostname}:3000`;
-
-    pushOrderUrl(origin);
-    pushOrderUrl(host3000);
-    pushOrderUrl(defaultApiBase);
+    if (!port3000FallbackLikelyUseless()) {
+      pushOrderUrl(host3000);
+      pushOrderUrl(defaultApiBase);
+    }
     return [...new Set(candidates)];
   }
 
@@ -288,9 +312,9 @@ export default function MesaClientApp() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
           });
-          // Si la base no tiene este endpoint (404/405 en SPA) o está caída (502/503/504),
-          // probamos el siguiente candidato.
-          if ([404, 405, 502, 503, 504].includes(probe.status)) continue;
+          // Solo reintentar cuando no existe la ruta (404) o el host rechaza POST por SPA (405).
+          // Errores 502/503 del proxy de Vercel deben mostrarse (mensaje de configuración / backend).
+          if ([404, 405].includes(probe.status)) continue;
           res = probe;
           break;
         } catch (err) {
