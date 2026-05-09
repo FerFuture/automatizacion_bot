@@ -49,6 +49,7 @@ export function orderFromWaiterPanelNotes(order) {
   const notes = String(order?.notes || "");
   if (/Origen:\s*mozo\b/i.test(notes)) return true;
   if (/^Mozo\s*·\s*Mesa:/i.test(notes.trim())) return true;
+  if (/^Mozo\s*·\s*Delivery\b/i.test(notes.trim())) return true;
   return false;
 }
 
@@ -111,9 +112,14 @@ export function fulfillmentIsDelivery(order) {
   return ft === "delivery";
 }
 
+export function fulfillmentIsWaiterDelivery(order) {
+  const ft = String(order?.fulfillment_type ?? "").trim().toLowerCase();
+  return ft === "delivery_mozo";
+}
+
 export function fulfillmentIsPickup(order) {
   const ft = String(order?.fulfillment_type ?? "").trim().toLowerCase();
-  return ft === "local" || ft === "mesa";
+  return ft === "local" || ft === "mesa" || ft === "delivery_mozo";
 }
 
 export function notesIndicateCustomerConfirmedDeliveryTotal(order) {
@@ -203,6 +209,10 @@ export function notesIndicateDelivery(order) {
 
 export function isDeliveryOrder(order) {
   return fulfillmentIsDelivery(order) || notesIndicateDelivery(order);
+}
+
+export function isWaiterDeliveryOrder(order) {
+  return fulfillmentIsWaiterDelivery(order);
 }
 
 export function deliveryFeeStillUnset(order) {
@@ -371,6 +381,33 @@ export function kitchenPaymentMethodLabelEs(order) {
  * Mozo: notas operativas (sin prefijo "Origen"). Cliente delivery: dirección + pago. Cliente local: teléfono + retiro.
  */
 export function kitchenMetaBoxContent(order) {
+  if (orderPlacedByWaiter(order) && isWaiterDeliveryOrder(order)) {
+    const addr = String(order?.address ?? "").trim();
+    const scheduled = formatDateTime(order?.scheduled_delivery_at);
+    const mozo = waiterNameFromMozoNotes(order?.notes);
+    return [
+      `Delivery mozo`,
+      `Dirección: ${addr || "—"}`,
+      scheduled ? `Programado: ${scheduled}` : "",
+      mozo ? `Mozo: ${mozo}` : ""
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  }
+  if (orderPlacedByWaiter(order) && isDeliveryOrder(order)) {
+    const addr = String(order?.address ?? "").trim();
+    const pay = kitchenPaymentMethodLabelEs(order);
+    const scheduled = formatDateTime(order?.scheduled_delivery_at);
+    const mozo = waiterNameFromMozoNotes(order?.notes);
+    return [
+      `Dirección: ${addr || "—"}`,
+      scheduled ? `Programado: ${scheduled}` : "",
+      `Pago: ${pay}`,
+      mozo ? `Mozo: ${mozo}` : ""
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  }
   if (orderPlacedByWaiter(order)) {
     let raw = String(order?.notes || "").trim();
     if (!raw) return "";

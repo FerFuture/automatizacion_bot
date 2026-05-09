@@ -11,6 +11,7 @@ import {
   fulfillmentIsPickup,
   adminDashboardNotesBlock,
   isDeliveryOrder,
+  isWaiterDeliveryOrder,
   normalizeOrderStatus,
   notesIndicateDelivery,
   orderNeedsDeliveryFeeControls,
@@ -42,9 +43,6 @@ const OPENING_HOURS_SUGGESTIONS = [
   "Lunes a Domingo de 19:00 a 02:00."
 ];
 
-/** En false no se muestran los switches del bot ni del horario en Configuración (sin interacción posible). */
-const SHOW_BOT_WHATSAPP_SWITCHES_IN_SETTINGS = false;
-
 function canRevertCancellation(order) {
   if (normalizeOrderStatus(order) !== "cancelled") return false;
   const at = order.cancelled_at;
@@ -69,9 +67,10 @@ function isLocalPickupOrder(order) {
  * No tiene sentido avisar "listo para retiro" porque ya están en el local atendidos.
  */
 function isPedidoEnMesaSalon(order) {
+  const ft = String(order?.fulfillment_type ?? "").trim().toLowerCase();
   return (
-    orderFromWaiterPanelNotes(order) ||
-    String(order?.fulfillment_type ?? "").trim().toLowerCase() === "mesa"
+    ft === "mesa" ||
+    (orderFromWaiterPanelNotes(order) && ft !== "delivery" && ft !== "delivery_mozo")
   );
 }
 
@@ -79,6 +78,10 @@ function isPedidoEnMesaSalon(order) {
 function isRetiroLocalCustomerPickup(order) {
   if (isPedidoEnMesaSalon(order)) return false;
   return isLocalPickupOrder(order);
+}
+
+function orderCanBeMarkedDeliveredInAdmin(order) {
+  return isRetiroLocalCustomerPickup(order) || isWaiterDeliveryOrder(order);
 }
 
 function localDateKey(d = new Date()) {
@@ -195,6 +198,8 @@ export default function AdminApp({ onLogout }) {
   const [localEnabled, setLocalEnabled] = useState(true);
   const [mesaEnabled, setMesaEnabled] = useState(true);
   const [mesaQrEnabled, setMesaQrEnabled] = useState(true);
+  const [waiterFulfillmentSelectorEnabled, setWaiterFulfillmentSelectorEnabled] = useState(false);
+  const [botRuntimeSwitchesVisible, setBotRuntimeSwitchesVisible] = useState(false);
   /** Master OFF en metadata → bot en silencio total (sin respuesta ni registro). */
   const [botWhatsappEnabled, setBotWhatsappEnabled] = useState(true);
   /** Si es false en metadata y el bot está ON → no bloquear fuera de horario. */
@@ -501,6 +506,8 @@ export default function AdminApp({ onLogout }) {
     setMesaEnabled(data.mesa_enabled !== false);
     setRestaurantMetadata(metadataObj);
     setMesaQrEnabled(metadataObj.mesa_qr_enabled !== false);
+    setWaiterFulfillmentSelectorEnabled(metadataObj.waiter_fulfillment_selector_enabled === true);
+    setBotRuntimeSwitchesVisible(metadataObj.bot_runtime_switches_visible === true);
     setBotWhatsappEnabled(metadataObj.bot_whatsapp_enabled !== false);
     setBotEnforceOpeningHours(metadataObj.bot_enforce_opening_hours !== false);
     setCashEnabled(data.cash_enabled !== false);
@@ -548,6 +555,7 @@ export default function AdminApp({ onLogout }) {
         : {};
     const nextMetadata = {
       ...metadataBase,
+      bot_runtime_switches_visible: Boolean(botRuntimeSwitchesVisible),
       bot_whatsapp_enabled: Boolean(botWhatsappEnabled),
       bot_enforce_opening_hours: Boolean(botEnforceOpeningHours)
     };
@@ -640,6 +648,52 @@ export default function AdminApp({ onLogout }) {
     return { ok: true };
   }
 
+  async function setWaiterFulfillmentSelectorFlag(nextEnabled) {
+    if (!restaurantId) {
+      setError("No hay restaurante cargado.");
+      return { ok: false };
+    }
+    setError("");
+    const nextMetadata = {
+      ...(restaurantMetadata && typeof restaurantMetadata === "object" ? restaurantMetadata : {}),
+      waiter_fulfillment_selector_enabled: Boolean(nextEnabled)
+    };
+    const { error: updateError } = await supabase
+      .from("restaurants")
+      .update({ metadata: nextMetadata })
+      .eq("id", restaurantId);
+    if (updateError) {
+      setError(`No se pudo guardar selector modalidad mozo: ${updateError.message}`);
+      return { ok: false, error: updateError };
+    }
+    setRestaurantMetadata(nextMetadata);
+    setWaiterFulfillmentSelectorEnabled(Boolean(nextEnabled));
+    return { ok: true };
+  }
+
+  async function setBotRuntimeSwitchesVisibleFlag(nextEnabled) {
+    if (!restaurantId) {
+      setError("No hay restaurante cargado.");
+      return { ok: false };
+    }
+    setError("");
+    const nextMetadata = {
+      ...(restaurantMetadata && typeof restaurantMetadata === "object" ? restaurantMetadata : {}),
+      bot_runtime_switches_visible: Boolean(nextEnabled)
+    };
+    const { error: updateError } = await supabase
+      .from("restaurants")
+      .update({ metadata: nextMetadata })
+      .eq("id", restaurantId);
+    if (updateError) {
+      setError(`No se pudo guardar visibilidad de controles Bot/Horario: ${updateError.message}`);
+      return { ok: false, error: updateError };
+    }
+    setRestaurantMetadata(nextMetadata);
+    setBotRuntimeSwitchesVisible(Boolean(nextEnabled));
+    return { ok: true };
+  }
+
   async function updateOrderStatus(orderId, nextStatus) {
     setSavingOrderId(orderId);
     const { error: updateError } = await supabase
@@ -662,18 +716,25 @@ export default function AdminApp({ onLogout }) {
       setError("Solo los pedidos en efectivo se confirman manualmente desde este panel.");
       return;
     }
+    if (normalizeOrderStatus(order) === "cancelled") {
+      setError("No se puede confirmar el pago de un pedido cancelado.");
+      return;
+    }
     setError("");
     setSavingOrderId(order.id);
     const paidAtIso = new Date().toISOString();
     const patch = {
-      status: "confirmed",
       payment_status: "paid",
       payment_paid_at: paidAtIso
     };
+    if (normalizeOrderStatus(order) !== "delivered") {
+      patch.status = "confirmed";
+    }
     const { data: updatedRow, error: updateError } = await supabase
       .from("orders")
       .update(patch)
       .eq("id", order.id)
+      .neq("status", "cancelled")
       .select("*")
       .maybeSingle();
 
@@ -792,6 +853,14 @@ export default function AdminApp({ onLogout }) {
   }
 
   async function markDelivered(order) {
+    if (isPedidoEnMesaSalon(order)) {
+      setError("La acción entregar no aplica a pedidos en mesa.");
+      return;
+    }
+    if (!orderCanBeMarkedDeliveredInAdmin(order)) {
+      setError("La entrega manual solo aplica a retiro local o delivery mozo.");
+      return;
+    }
     const st = normalizeOrderStatus(order);
     if (st === "delivered" || st === "cancelled") {
       setError("Este pedido ya está cerrado.");
@@ -1797,7 +1866,11 @@ export default function AdminApp({ onLogout }) {
                     </p>
                     <p>
                       <span className="text-slate-500">Modalidad:</span>{" "}
-                      {orderFromWaiterPanelNotes(order) || order.fulfillment_type === "mesa"
+                      {isWaiterDeliveryOrder(order)
+                        ? "Delivery mozo"
+                        : fulfillmentIsDelivery(order)
+                        ? "Delivery"
+                        : orderFromWaiterPanelNotes(order) || order.fulfillment_type === "mesa"
                         ? "Pedido en mesa"
                         : order.fulfillment_type === "local"
                           ? "Retiro local"
@@ -1830,6 +1903,12 @@ export default function AdminApp({ onLogout }) {
                     <p>
                       <span className="text-slate-500">Direccion:</span> {order.address || "-"}
                     </p>
+                    {order.scheduled_delivery_at ? (
+                      <p>
+                        <span className="text-slate-500">Horario delivery:</span>{" "}
+                        {formatPaidAt(order.scheduled_delivery_at) || "-"}
+                      </p>
+                    ) : null}
                     {order.payment_link ? (
                       <p className="md:col-span-2 break-all">
                         <span className="text-slate-500">Link MP:</span>{" "}
@@ -2077,6 +2156,7 @@ export default function AdminApp({ onLogout }) {
                       const paidAtLabel = formatPaidAt(order.payment_paid_at);
                       const status = normalizeOrderStatus(order);
                       const isClosed = status === "delivered" || status === "cancelled";
+                      const canConfirmCash = method === "cash" && !approved && status !== "cancelled";
                       const deliveredAtLabel = formatPaidAt(order.delivered_at);
                       const cancelledAtLabel = formatPaidAt(order.cancelled_at);
 
@@ -2120,6 +2200,17 @@ export default function AdminApp({ onLogout }) {
                             </div>
                           ) : null}
 
+                          {canConfirmCash && status !== "delivered" ? (
+                            <button
+                              type="button"
+                              disabled={savingOrderId === order.id}
+                              onClick={() => confirmCashPayment(order)}
+                              className="rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-1 text-xs text-blue-300"
+                            >
+                              Confirmar pago efectivo
+                            </button>
+                          ) : null}
+
                           {status === "delivered" ? (
                             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
                               <span>
@@ -2135,15 +2226,27 @@ export default function AdminApp({ onLogout }) {
                                   </span>
                                 ) : null}
                               </span>
-                              <button
-                                type="button"
-                                disabled={savingOrderId === order.id}
-                                onClick={() => revertClosedOrder(order, "delivered")}
-                                className="rounded-md border border-amber-400/50 bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-200 hover:bg-amber-500/25 disabled:opacity-50"
-                                title="Volver el pedido al estado activo previo"
-                              >
-                                Revertir entrega
-                              </button>
+                              <div className="flex flex-wrap gap-2">
+                                {canConfirmCash ? (
+                                  <button
+                                    type="button"
+                                    disabled={savingOrderId === order.id}
+                                    onClick={() => confirmCashPayment(order)}
+                                    className="rounded-md border border-blue-400/50 bg-blue-500/15 px-2 py-0.5 text-[11px] font-medium text-blue-200 hover:bg-blue-500/25 disabled:opacity-50"
+                                  >
+                                    Confirmar pago efectivo
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  disabled={savingOrderId === order.id}
+                                  onClick={() => revertClosedOrder(order, "delivered")}
+                                  className="rounded-md border border-amber-400/50 bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-200 hover:bg-amber-500/25 disabled:opacity-50"
+                                  title="Volver el pedido al estado activo previo"
+                                >
+                                  Revertir entrega
+                                </button>
+                              </div>
                             </div>
                           ) : status === "cancelled" ? (
                             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
@@ -2174,16 +2277,6 @@ export default function AdminApp({ onLogout }) {
                             </div>
                           ) : (
                             <div className="flex flex-wrap gap-2">
-                              {method === "cash" && !approved && !isDeliveryOrder(order) ? (
-                                <button
-                                  type="button"
-                                  disabled={savingOrderId === order.id}
-                                  onClick={() => confirmCashPayment(order)}
-                                  className="rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-1 text-xs text-blue-300"
-                                >
-                                  Confirmar pago efectivo
-                                </button>
-                              ) : null}
                               {deliveryEnabled && adminShowNotifyDeliveriesReadyButton(order) ? (
                                 <button
                                   type="button"
@@ -2252,7 +2345,7 @@ export default function AdminApp({ onLogout }) {
                                     : ""}
                                 </span>
                               ) : null}
-                              {isDeliveryOrder(order) ? null : (
+                              {orderCanBeMarkedDeliveredInAdmin(order) ? (
                                 <button
                                   type="button"
                                   disabled={savingOrderId === order.id}
@@ -2261,7 +2354,7 @@ export default function AdminApp({ onLogout }) {
                                 >
                                   Entregado
                                 </button>
-                              )}
+                              ) : null}
                               <button
                                 type="button"
                                 disabled={savingOrderId === order.id}
@@ -2543,6 +2636,8 @@ export default function AdminApp({ onLogout }) {
             localEnabled={localEnabled}
             mesaEnabled={mesaEnabled}
             mesaQrEnabled={mesaQrEnabled}
+            waiterFulfillmentSelectorEnabled={waiterFulfillmentSelectorEnabled}
+            botRuntimeSwitchesVisible={botRuntimeSwitchesVisible}
             cashEnabled={cashEnabled}
             mercadoPagoEnabled={mercadoPagoEnabled}
             statsEnabled={statsEnabled}
@@ -2554,6 +2649,8 @@ export default function AdminApp({ onLogout }) {
             onServiceFlagsUpdated={() => loadRestaurantConfig(restaurantId)}
             onTableCountUpdated={() => loadRestaurantConfig(restaurantId)}
             onMesaQrModuleToggle={setMesaQrModuleEnabled}
+            onWaiterFulfillmentSelectorToggle={setWaiterFulfillmentSelectorFlag}
+            onBotRuntimeSwitchesVisibleToggle={setBotRuntimeSwitchesVisibleFlag}
           />
         ) : (
           <section className="space-y-4">
@@ -2647,7 +2744,7 @@ export default function AdminApp({ onLogout }) {
                   </span>
                 </label>
 
-                {SHOW_BOT_WHATSAPP_SWITCHES_IN_SETTINGS ? (
+                {botRuntimeSwitchesVisible ? (
                   <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-950/60 p-4 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0 flex-1">
@@ -2896,11 +2993,13 @@ function OrdersFilterBar({ filters, todayOnly, onApply, onReset, total, shown, d
     ? [
         { value: "all", label: "Todas" },
         { value: "delivery", label: "Delivery" },
+        { value: "delivery_mozo", label: "Delivery mozo" },
         { value: "local", label: "Retiro en local" },
         { value: "mesa", label: "Pedido en mesa" }
       ]
     : [
         { value: "all", label: "Todas" },
+        { value: "delivery_mozo", label: "Delivery mozo" },
         { value: "local", label: "Retiro en local" },
         { value: "mesa", label: "Pedido en mesa" }
       ];

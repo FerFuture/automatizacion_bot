@@ -10,6 +10,8 @@ export default function MaestroPanel({
   localEnabled,
   mesaEnabled,
   mesaQrEnabled,
+  waiterFulfillmentSelectorEnabled,
+  botRuntimeSwitchesVisible,
   cashEnabled,
   mercadoPagoEnabled,
   statsEnabled,
@@ -17,7 +19,9 @@ export default function MaestroPanel({
   loadingRestaurant,
   onServiceFlagsUpdated,
   onTableCountUpdated,
-  onMesaQrModuleToggle
+  onMesaQrModuleToggle,
+  onWaiterFulfillmentSelectorToggle,
+  onBotRuntimeSwitchesVisibleToggle
 }) {
   const [savingDelivery, setSavingDelivery] = useState(false);
   const [savingTables, setSavingTables] = useState(false);
@@ -109,6 +113,50 @@ export default function MaestroPanel({
     setLocalOk(nextEnabled ? "Carta y QR mesas habilitado." : "Carta y QR mesas deshabilitado.");
   }
 
+  async function setWaiterFulfillmentSelectorFlag(nextEnabled) {
+    if (savingDelivery || savingTables) return;
+    if (typeof onWaiterFulfillmentSelectorToggle !== "function") {
+      setLocalError("No se pudo actualizar selector de modalidad del mozo.");
+      return;
+    }
+    setLocalError("");
+    setLocalOk("");
+    setSavingDelivery(true);
+    const result = await onWaiterFulfillmentSelectorToggle(Boolean(nextEnabled));
+    setSavingDelivery(false);
+    if (!result?.ok) {
+      setLocalError("No se pudo guardar selector de modalidad del mozo.");
+      return;
+    }
+    setLocalOk(
+      nextEnabled
+        ? "Selector de modalidad del mozo visible."
+        : "Selector de modalidad del mozo oculto."
+    );
+  }
+
+  async function setBotRuntimeSwitchesVisibleFlag(nextEnabled) {
+    if (savingDelivery || savingTables) return;
+    if (typeof onBotRuntimeSwitchesVisibleToggle !== "function") {
+      setLocalError("No se pudo actualizar controles Bot/Horario.");
+      return;
+    }
+    setLocalError("");
+    setLocalOk("");
+    setSavingDelivery(true);
+    const result = await onBotRuntimeSwitchesVisibleToggle(Boolean(nextEnabled));
+    setSavingDelivery(false);
+    if (!result?.ok) {
+      setLocalError("No se pudo guardar controles Bot/Horario.");
+      return;
+    }
+    setLocalOk(
+      nextEnabled
+        ? "Controles Bot/Horario visibles en Configuración."
+        : "Controles Bot/Horario ocultos en Configuración."
+    );
+  }
+
   async function copyRestartCommand() {
     try {
       await navigator.clipboard.writeText(restartCommand);
@@ -145,6 +193,13 @@ export default function MaestroPanel({
           </li>
           <li>
             <strong>Carta y QR mesas:</strong> controla la pestaña específica del dashboard para gestión de QR por mesa.
+          </li>
+          <li>
+            <strong>Modalidad del mozo:</strong> muestra/oculta el selector Mesa/Delivery en el panel del mozo.
+          </li>
+          <li>
+            <strong>Controles Bot/Horario:</strong> muestra/oculta en Configuración los switches del bot de WhatsApp y
+            respeto de horario.
           </li>
           <li>
             <strong>Métodos de pago:</strong> activá/desactivá efectivo y Mercado Pago en el flujo del bot.
@@ -516,6 +571,90 @@ export default function MaestroPanel({
                 />
               </button>
               <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${mesaQrEnabled ? "text-emerald-300" : "text-slate-500"}`}>
+                On
+              </span>
+            </div>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-slate-200">Controles Bot/Horario en Configuración</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {botRuntimeSwitchesVisible
+                  ? "ON · Configuración muestra los switches Bot de WhatsApp y Respetar horario."
+                  : "OFF · Configuración oculta ambos switches."}
+              </p>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-3 sm:gap-4">
+              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${botRuntimeSwitchesVisible ? "text-slate-500" : "text-rose-300"}`}>
+                Off
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={botRuntimeSwitchesVisible}
+                aria-label={botRuntimeSwitchesVisible ? "Controles Bot/Horario visibles. Pulsa para ocultar." : "Controles Bot/Horario ocultos. Pulsa para mostrar."}
+                disabled={busy}
+                onClick={() => setBotRuntimeSwitchesVisibleFlag(!botRuntimeSwitchesVisible)}
+                className={[
+                  "relative h-10 w-[4.5rem] shrink-0 rounded-full border border-slate-600/80 transition-colors duration-200",
+                  botRuntimeSwitchesVisible ? "bg-emerald-600" : "bg-slate-700",
+                  busy ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+                ].join(" ")}
+              >
+                <span
+                  aria-hidden
+                  className={[
+                    "absolute top-1 left-1 block h-8 w-8 rounded-full bg-white shadow-md ring-1 ring-black/10 transition-transform duration-200 ease-out",
+                    botRuntimeSwitchesVisible ? "translate-x-8" : "translate-x-0"
+                  ].join(" ")}
+                />
+              </button>
+              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${botRuntimeSwitchesVisible ? "text-emerald-300" : "text-slate-500"}`}>
+                On
+              </span>
+            </div>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-slate-200">Selector modalidad mozo</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {waiterFulfillmentSelectorEnabled
+                  ? "ON · El mozo puede ver y elegir Mesa o Delivery."
+                  : "OFF · El panel del mozo queda fijo en Mesa y oculta el selector."}
+              </p>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-3 sm:gap-4">
+              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${waiterFulfillmentSelectorEnabled ? "text-slate-500" : "text-rose-300"}`}>
+                Off
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={waiterFulfillmentSelectorEnabled}
+                aria-label={waiterFulfillmentSelectorEnabled ? "Selector modalidad mozo visible. Pulsa para ocultar." : "Selector modalidad mozo oculto. Pulsa para mostrar."}
+                disabled={busy}
+                onClick={() => setWaiterFulfillmentSelectorFlag(!waiterFulfillmentSelectorEnabled)}
+                className={[
+                  "relative h-10 w-[4.5rem] shrink-0 rounded-full border border-slate-600/80 transition-colors duration-200",
+                  waiterFulfillmentSelectorEnabled ? "bg-emerald-600" : "bg-slate-700",
+                  busy ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+                ].join(" ")}
+              >
+                <span
+                  aria-hidden
+                  className={[
+                    "absolute top-1 left-1 block h-8 w-8 rounded-full bg-white shadow-md ring-1 ring-black/10 transition-transform duration-200 ease-out",
+                    waiterFulfillmentSelectorEnabled ? "translate-x-8" : "translate-x-0"
+                  ].join(" ")}
+                />
+              </button>
+              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${waiterFulfillmentSelectorEnabled ? "text-emerald-300" : "text-slate-500"}`}>
                 On
               </span>
             </div>

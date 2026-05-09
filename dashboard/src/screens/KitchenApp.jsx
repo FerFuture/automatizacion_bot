@@ -5,6 +5,7 @@ import {
   formatDateTime,
   groupOrderItemRows,
   isDeliveryOrder,
+  isWaiterDeliveryOrder,
   kitchenMetaBoxContent,
   normalizeOrderStatus,
   orderInKitchenQueue,
@@ -159,6 +160,7 @@ export default function KitchenApp({ onLogout }) {
               const mesa = tableNumberLabel(order);
               const st = normalizeOrderStatus(order);
               const fromCustomer = !orderPlacedByWaiter(order);
+              const waiterDelivery = isWaiterDeliveryOrder(order);
               const kitchenMeta = kitchenMetaBoxContent(order);
               return (
                 <li
@@ -179,7 +181,9 @@ export default function KitchenApp({ onLogout }) {
                           )
                         ) : (
                           <>
-                            {isDeliveryOrder(order) ? (
+                            {waiterDelivery ? (
+                              <span className="text-sky-300">Delivery mozo</span>
+                            ) : isDeliveryOrder(order) ? (
                               <span className="text-sky-300">Delivery</span>
                             ) : (
                               <span className="text-violet-300">Local / retiro</span>
