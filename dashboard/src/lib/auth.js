@@ -6,6 +6,7 @@ import {
 } from "./deliverySchedule";
 
 const SESSION_KEY = "restobot_session_v1";
+export const SESSION_REVALIDATE_MS = 120_000;
 
 /** Roles que pueden guardarse en sesión (incluye maestro: solo login por env, no alta en BD). */
 export const SESSION_ROLES = ["admin", "encargado", "delivery", "kitchen", "waiter", "maestro"];
@@ -58,6 +59,54 @@ export function getSession() {
   }
 }
 
+function saveSession(session) {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  } catch {
+  }
+}
+
+function normalizeSessionUpdatedAt(value) {
+  return value ? String(value) : "";
+}
+
+export async function validateStoredSession(session = getSession()) {
+  if (!session) return { ok: false, reason: "missing" };
+  if (session.loginSource !== "db") return { ok: true, session };
+  if (!session.userId || !DB_USER_ROLES.includes(session.role)) {
+    return { ok: false, reason: "invalid_session" };
+  }
+
+  const { data, error } = await supabase
+    .from(DASHBOARD_USERS_TABLE)
+    .select("id, role, is_active, updated_at")
+    .eq("id", session.userId)
+    .maybeSingle();
+
+  if (error) {
+    return { ok: true, session, warning: error.message || "No se pudo validar la sesión." };
+  }
+  if (!data || !data.is_active) {
+    return { ok: false, reason: "user_inactive_or_deleted" };
+  }
+  if (data.role !== session.role) {
+    return { ok: false, reason: "role_changed" };
+  }
+
+  const dbUpdatedAt = normalizeSessionUpdatedAt(data.updated_at);
+  const sessionUpdatedAt = normalizeSessionUpdatedAt(session.userUpdatedAt);
+  if (!sessionUpdatedAt) {
+    const nextSession = { ...session, userUpdatedAt: dbUpdatedAt };
+    saveSession(nextSession);
+    return { ok: true, session: nextSession };
+  }
+  if (dbUpdatedAt && dbUpdatedAt !== sessionUpdatedAt) {
+    return { ok: false, reason: "user_updated" };
+  }
+
+  return { ok: true, session };
+}
+
 async function loginWithTableUser(username, password) {
   const norm = String(username || "")
     .trim()
@@ -67,7 +116,7 @@ async function loginWithTableUser(username, password) {
   }
   const { data, error } = await supabase
     .from(DASHBOARD_USERS_TABLE)
-    .select("id, password_hash, role, is_active, delivery_work_weekdays")
+    .select("id, password_hash, role, is_active, delivery_work_weekdays, updated_at")
     .eq("username", norm)
     .maybeSingle();
 
@@ -104,13 +153,11 @@ async function loginWithTableUser(username, password) {
     role: data.role,
     username: norm,
     userId: data.id,
+    userUpdatedAt: normalizeSessionUpdatedAt(data.updated_at),
     loginSource: "db",
     loggedInAt: new Date().toISOString()
   };
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  } catch {
-  }
+  saveSession(session);
   return { ok: true, session };
 }
 
@@ -133,10 +180,7 @@ function loginWithEnvPassword(role, password) {
     loginSource: "env",
     loggedInAt: new Date().toISOString()
   };
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  } catch {
-  }
+  saveSession(session);
   return { ok: true, session };
 }
 

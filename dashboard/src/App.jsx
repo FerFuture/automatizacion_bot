@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import Login from "./screens/Login";
 import AdminApp from "./screens/AdminApp";
@@ -6,7 +6,7 @@ import DeliveryApp from "./screens/DeliveryApp";
 import KitchenApp from "./screens/KitchenApp";
 import WaiterApp from "./screens/WaiterApp";
 import MesaClientApp from "./screens/MesaClientApp";
-import { getSession, logout } from "./lib/auth";
+import { getSession, logout, SESSION_REVALIDATE_MS, validateStoredSession } from "./lib/auth";
 
 function homePathForRole(role) {
   if (role === "admin" || role === "maestro" || role === "encargado") return "/admin";
@@ -16,20 +16,63 @@ function homePathForRole(role) {
   return "/login";
 }
 
+function sessionInvalidationMessage(reason) {
+  if (reason === "user_updated") {
+    return "Tu usuario fue actualizado. Iniciá sesión nuevamente.";
+  }
+  if (reason === "role_changed") {
+    return "Tu rol cambió. Iniciá sesión nuevamente.";
+  }
+  if (reason === "user_inactive_or_deleted") {
+    return "Tu usuario fue desactivado o eliminado.";
+  }
+  return "Tu sesión ya no es válida. Iniciá sesión nuevamente.";
+}
+
 function AppRoutes() {
   const [session, setSession] = useState(() => getSession());
+  const [sessionNotice, setSessionNotice] = useState("");
   const navigate = useNavigate();
 
   function handleLogout() {
     logout();
     setSession(null);
+    setSessionNotice("");
     navigate("/login", { replace: true });
   }
 
   function onLoggedIn(nextSession) {
+    setSessionNotice("");
     setSession(nextSession);
     navigate(homePathForRole(nextSession.role), { replace: true });
   }
+
+  useEffect(() => {
+    if (!session) return undefined;
+    let cancelled = false;
+
+    async function checkSession() {
+      const result = await validateStoredSession(session);
+      if (cancelled) return;
+      if (result.ok) {
+        if (result.session && result.session.userUpdatedAt !== session.userUpdatedAt) {
+          setSession(result.session);
+        }
+        return;
+      }
+      logout();
+      setSession(null);
+      setSessionNotice(sessionInvalidationMessage(result.reason));
+      navigate("/login", { replace: true });
+    }
+
+    checkSession();
+    const intervalId = window.setInterval(checkSession, SESSION_REVALIDATE_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [navigate, session]);
 
   return (
     <Routes>
@@ -40,7 +83,7 @@ function AppRoutes() {
           session ? (
             <Navigate to={homePathForRole(session.role)} replace />
           ) : (
-            <Login onLoggedIn={onLoggedIn} />
+            <Login onLoggedIn={onLoggedIn} sessionNotice={sessionNotice} />
           )
         }
       />

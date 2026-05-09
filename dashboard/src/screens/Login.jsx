@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { login } from "../lib/auth";
 
-export default function Login({ onLoggedIn }) {
+export default function Login({ onLoggedIn, sessionNotice = "" }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -81,6 +81,12 @@ export default function Login({ onLoggedIn }) {
               className="h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm outline-none transition focus:border-emerald-500/60 focus:ring-2 focus:ring-emerald-500/20"
             />
           </div>
+
+          {sessionNotice ? (
+            <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              {sessionNotice}
+            </div>
+          ) : null}
 
           {error ? (
             <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
