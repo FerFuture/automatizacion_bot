@@ -41,14 +41,45 @@ export function normalizeOrderStatus(order) {
   return String(order?.status ?? "").trim();
 }
 
-/** Pedido cargado desde el panel Mozo (no desde WhatsApp del cliente). */
-export function orderPlacedByWaiter(order) {
+/**
+ * Pedido identificable como cargado desde el panel Mozo solo por notas
+ * (sin usar `efectivo_mesa`, que también usan clientes en mesa por WhatsApp).
+ */
+export function orderFromWaiterPanelNotes(order) {
   const notes = String(order?.notes || "");
   if (/Origen:\s*mozo\b/i.test(notes)) return true;
   if (/^Mozo\s*·\s*Mesa:/i.test(notes.trim())) return true;
+  return false;
+}
+
+/** Mesa desde carta/QR/API sin identidad WhatsApp del comensal (`customer_number` vacío en BD). */
+export function orderIsAnonymousMesaWeb(order) {
+  const ft = String(order?.fulfillment_type ?? "").trim().toLowerCase();
+  if (ft !== "mesa") return false;
+  return String(order?.customer_number ?? "").trim() === "";
+}
+
+/**
+ * Línea "Cliente nro" en panel admin: sin valor cuando es mozo o mesa web sin WA del cliente.
+ */
+export function adminShowClienteNroRow(order) {
+  if (orderFromWaiterPanelNotes(order)) return false;
+  if (orderIsAnonymousMesaWeb(order)) return false;
+  return true;
+}
+
+/** Pedido cargado desde el panel Mozo (no desde WhatsApp del cliente). */
+export function orderPlacedByWaiter(order) {
+  if (orderFromWaiterPanelNotes(order)) return true;
   const pm = String(order?.payment_method ?? "").toLowerCase();
   if (pm.includes("efectivo_mesa")) return true;
   return false;
+}
+
+/** Nombre del mozo guardado al final de las notas (`· Mozo: nombre`). */
+export function waiterNameFromMozoNotes(notes) {
+  const m = String(notes || "").match(/·\s*Mozo:\s*(.+)$/im);
+  return m ? m[1].trim() : "";
 }
 
 /** Solo UI (dashboard): estado del pedido en español; la BD no cambia. */
@@ -387,7 +418,13 @@ export function adminDashboardNotesBlock(order) {
   }
 
   const joined = chunks.filter(Boolean).join(" // ");
-  if (joined) return joined;
+  if (joined) {
+    if (orderPlacedByWaiter(order)) {
+      const mozo = waiterNameFromMozoNotes(order?.notes);
+      if (mozo) return `${joined} // Mozo: ${mozo}`;
+    }
+    return joined;
+  }
   return (
     formatOrderNotesForDisplay(order?.notes) ||
     String(order?.raw_request || "").trim() ||

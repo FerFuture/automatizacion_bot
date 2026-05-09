@@ -8,13 +8,14 @@ import {
 const SESSION_KEY = "restobot_session_v1";
 
 /** Roles que pueden guardarse en sesión (incluye maestro: solo login por env, no alta en BD). */
-export const SESSION_ROLES = ["admin", "delivery", "kitchen", "waiter", "maestro"];
+export const SESSION_ROLES = ["admin", "encargado", "delivery", "kitchen", "waiter", "maestro"];
 
 /** Roles permitidos en la tabla `dashboard_users`. */
-export const DB_USER_ROLES = ["admin", "delivery", "kitchen", "waiter"];
+export const DB_USER_ROLES = ["admin", "encargado", "delivery", "kitchen", "waiter"];
 
 export const ROLE_LABELS = {
   admin: "Restaurante (admin)",
+  encargado: "Encargado",
   delivery: "Repartidor (delivery)",
   kitchen: "Cocina",
   waiter: "Mozo",

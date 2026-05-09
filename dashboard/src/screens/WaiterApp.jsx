@@ -286,7 +286,7 @@ export default function WaiterApp({ onLogout }) {
       status: "confirmed",
       payment_method: "efectivo_mesa",
       payment_status: "pending",
-      fulfillment_type: "local",
+      fulfillment_type: "mesa",
       total_price: totalAmount,
       total_amount: totalAmount,
       subtotal_amount: totalAmount,

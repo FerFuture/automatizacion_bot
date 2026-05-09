@@ -15,6 +15,8 @@ import {
   notesIndicateDelivery,
   orderNeedsDeliveryFeeControls,
   adminShowNotifyDeliveriesReadyButton,
+  adminShowClienteNroRow,
+  orderFromWaiterPanelNotes,
   orderInKitchenQueue,
   orderKitchenReady,
   paymentIsApproved,
@@ -40,6 +42,9 @@ const OPENING_HOURS_SUGGESTIONS = [
   "Lunes a Domingo de 19:00 a 02:00."
 ];
 
+/** En false no se muestran los switches del bot ni del horario en Configuración (sin interacción posible). */
+const SHOW_BOT_WHATSAPP_SWITCHES_IN_SETTINGS = false;
+
 function canRevertCancellation(order) {
   if (normalizeOrderStatus(order) !== "cancelled") return false;
   const at = order.cancelled_at;
@@ -57,6 +62,23 @@ function shouldShowDeliveryRepartoSection(order) {
 
 function isLocalPickupOrder(order) {
   return String(order?.fulfillment_type ?? "").trim().toLowerCase() === "local";
+}
+
+/**
+ * Coincide con la etiqueta "Pedido en mesa" del panel: cliente en salón o carga mozo.
+ * No tiene sentido avisar "listo para retiro" porque ya están en el local atendidos.
+ */
+function isPedidoEnMesaSalon(order) {
+  return (
+    orderFromWaiterPanelNotes(order) ||
+    String(order?.fulfillment_type ?? "").trim().toLowerCase() === "mesa"
+  );
+}
+
+/** Solo retiro pasando a buscar (modalidad distinta de pedido en mesa). */
+function isRetiroLocalCustomerPickup(order) {
+  if (isPedidoEnMesaSalon(order)) return false;
+  return isLocalPickupOrder(order);
 }
 
 function localDateKey(d = new Date()) {
@@ -96,6 +118,9 @@ function localDateKeyEndIso(dateKey) {
 export default function AdminApp({ onLogout }) {
   const session = getSession();
   const isMaestro = session?.role === "maestro";
+  const isEncargado = session?.role === "encargado";
+  /** Admin completo o Maestro; no encargado (solo pedidos + menú). */
+  const canAccessFullAdminPanel = !isEncargado;
 
   const [activeTab, setActiveTab] = useState(() =>
     getSession()?.role === "maestro" ? "maestro" : "orders"
@@ -104,6 +129,12 @@ export default function AdminApp({ onLogout }) {
   useEffect(() => {
     if (activeTab === "maestro" && !isMaestro) setActiveTab("orders");
   }, [activeTab, isMaestro]);
+
+  useEffect(() => {
+    if (!isEncargado) return;
+    const hidden = new Set(["settings", "users", "stats", "mesaqr", "maestro"]);
+    if (hidden.has(activeTab)) setActiveTab("orders");
+  }, [isEncargado, activeTab]);
   const [orders, setOrders] = useState([]);
   const [deliveryUserLabels, setDeliveryUserLabels] = useState({});
   const ORDERS_PAGE_SIZE = 30;
@@ -164,6 +195,10 @@ export default function AdminApp({ onLogout }) {
   const [localEnabled, setLocalEnabled] = useState(true);
   const [mesaEnabled, setMesaEnabled] = useState(true);
   const [mesaQrEnabled, setMesaQrEnabled] = useState(true);
+  /** Master OFF en metadata → bot en silencio total (sin respuesta ni registro). */
+  const [botWhatsappEnabled, setBotWhatsappEnabled] = useState(true);
+  /** Si es false en metadata y el bot está ON → no bloquear fuera de horario. */
+  const [botEnforceOpeningHours, setBotEnforceOpeningHours] = useState(true);
   const [restaurantMetadata, setRestaurantMetadata] = useState({});
   const [cashEnabled, setCashEnabled] = useState(true);
   const [mercadoPagoEnabled, setMercadoPagoEnabled] = useState(true);
@@ -466,6 +501,8 @@ export default function AdminApp({ onLogout }) {
     setMesaEnabled(data.mesa_enabled !== false);
     setRestaurantMetadata(metadataObj);
     setMesaQrEnabled(metadataObj.mesa_qr_enabled !== false);
+    setBotWhatsappEnabled(metadataObj.bot_whatsapp_enabled !== false);
+    setBotEnforceOpeningHours(metadataObj.bot_enforce_opening_hours !== false);
     setCashEnabled(data.cash_enabled !== false);
     setMercadoPagoEnabled(data.mercadopago_enabled !== false);
     setStatsEnabled(data.stats_enabled !== false);
@@ -505,10 +542,20 @@ export default function AdminApp({ onLogout }) {
       policies: restaurantConfig.policies.trim() || null
     };
 
+    const metadataBase =
+      restaurantMetadata && typeof restaurantMetadata === "object" && !Array.isArray(restaurantMetadata)
+        ? restaurantMetadata
+        : {};
+    const nextMetadata = {
+      ...metadataBase,
+      bot_whatsapp_enabled: Boolean(botWhatsappEnabled),
+      bot_enforce_opening_hours: Boolean(botEnforceOpeningHours)
+    };
+
     // `.single()` obliga error cuando UPDATE no devuelve exactamente 1 fila (0 por RLS, UUID mal, etc.).
     const { data, error: updateError } = await supabase
       .from("restaurants")
-      .update(patch)
+      .update({ ...patch, metadata: nextMetadata })
       .eq("id", restaurantId)
       .select("name, public_name, address, delivery_zones, table_count, opening_hours, policies")
       .single();
@@ -563,6 +610,7 @@ export default function AdminApp({ onLogout }) {
       policies: policiesAsText
     });
     if (data.name) setRestaurantName(data.name);
+    setRestaurantMetadata(nextMetadata);
 
     setConfigFlash("Configuración guardada. Los cambios se aplican en los próximos mensajes al cliente.");
     setSavingConfig(false);
@@ -652,7 +700,7 @@ export default function AdminApp({ onLogout }) {
       setError("No se puede avisar retiro en pedidos cerrados.");
       return;
     }
-    if (!isLocalPickupOrder(order)) {
+    if (!isRetiroLocalCustomerPickup(order)) {
       setError("Este aviso solo aplica a pedidos de retiro en el local.");
       return;
     }
@@ -1444,7 +1492,11 @@ export default function AdminApp({ onLogout }) {
         <header className="mb-6 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold">RestoBot · Panel</h1>
-            <p className="text-sm text-slate-400">Gestion de pedidos y menu en tiempo real</p>
+            <p className="text-sm text-slate-400">
+              {isEncargado
+                ? "Encargado · pedidos y carta (sin configuración ni usuarios)"
+                : "Gestion de pedidos y menu en tiempo real"}
+            </p>
             {restaurantName ? (
               <p className="mt-1 text-xs text-slate-500">Restaurante activo: {restaurantName}</p>
             ) : null}
@@ -1488,7 +1540,7 @@ export default function AdminApp({ onLogout }) {
           >
             Gestor de Menu
           </button>
-          {mesaQrEnabled ? (
+          {canAccessFullAdminPanel && mesaQrEnabled ? (
             <button
               type="button"
               onClick={() => setActiveTab("mesaqr")}
@@ -1501,7 +1553,7 @@ export default function AdminApp({ onLogout }) {
               Carta y QR Mesas
             </button>
           ) : null}
-          {statsEnabled ? (
+          {canAccessFullAdminPanel && statsEnabled ? (
             <button
               type="button"
               onClick={() => setActiveTab("stats")}
@@ -1514,28 +1566,32 @@ export default function AdminApp({ onLogout }) {
               Estadísticas
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => setActiveTab("users")}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-              activeTab === "users"
-                ? "bg-emerald-500 text-slate-950"
-                : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
-            }`}
-          >
-            Usuarios
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("settings")}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-              activeTab === "settings"
-                ? "bg-emerald-500 text-slate-950"
-                : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
-            }`}
-          >
-            Configuración
-          </button>
+          {canAccessFullAdminPanel ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("users")}
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "users"
+                  ? "bg-emerald-500 text-slate-950"
+                  : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              Usuarios
+            </button>
+          ) : null}
+          {canAccessFullAdminPanel ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("settings")}
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "settings"
+                  ? "bg-emerald-500 text-slate-950"
+                  : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              Configuración
+            </button>
+          ) : null}
           {isMaestro ? (
             <button
               type="button"
@@ -1723,26 +1779,28 @@ export default function AdminApp({ onLogout }) {
                         <span className="text-slate-500">Cliente:</span>{" "}
                         <span className="break-all text-slate-200">{order.customer_number || "—"}</span>
                       </p>
-                      <p className="mt-1">
-                        <span className="text-slate-500">Cliente nro:</span>{" "}
-                        <span className="tabular-nums text-slate-200">
-                          {(() => {
-                            const digits = callableCustomerPhone(order);
-                            if (digits) return formatPhoneLabel(digits);
-                            return "—";
-                          })()}
-                        </span>
-                      </p>
+                      {adminShowClienteNroRow(order) ? (
+                        <p className="mt-1">
+                          <span className="text-slate-500">Cliente nro:</span>{" "}
+                          <span className="tabular-nums text-slate-200">
+                            {(() => {
+                              const digits = callableCustomerPhone(order);
+                              if (digits) return formatPhoneLabel(digits);
+                              return "—";
+                            })()}
+                          </span>
+                        </p>
+                      ) : null}
                     </div>
                     <p>
                       <span className="text-slate-500">Metodo pago:</span> {order.payment_method || "-"}
                     </p>
                     <p>
                       <span className="text-slate-500">Modalidad:</span>{" "}
-                      {order.fulfillment_type === "local"
-                        ? "Retiro local"
-                        : order.fulfillment_type === "mesa"
-                          ? "Pedido en mesa"
+                      {orderFromWaiterPanelNotes(order) || order.fulfillment_type === "mesa"
+                        ? "Pedido en mesa"
+                        : order.fulfillment_type === "local"
+                          ? "Retiro local"
                           : order.fulfillment_type || (order.address ? "delivery" : "-")}
                     </p>
                     <p>
@@ -2167,7 +2225,7 @@ export default function AdminApp({ onLogout }) {
                                     : ""}
                                 </span>
                               ) : null}
-                              {isLocalPickupOrder(order) &&
+                              {isRetiroLocalCustomerPickup(order) &&
                               !order.pickup_ready_customer_notified_at ? (
                                 <button
                                   type="button"
@@ -2179,14 +2237,14 @@ export default function AdminApp({ onLogout }) {
                                   Avisar: listo para retiro
                                 </button>
                               ) : null}
-                              {isLocalPickupOrder(order) &&
+                              {isRetiroLocalCustomerPickup(order) &&
                               order.pickup_ready_notify_requested_at &&
                               !order.pickup_ready_customer_notified_at ? (
                                 <span className="text-[11px] text-slate-400">
                                   Enviando aviso al cliente…
                                 </span>
                               ) : null}
-                              {isLocalPickupOrder(order) && order.pickup_ready_customer_notified_at ? (
+                              {isRetiroLocalCustomerPickup(order) && order.pickup_ready_customer_notified_at ? (
                                 <span className="text-[11px] text-emerald-200/80">
                                   Cliente avisado (retiro)
                                   {formatPaidAt(order.pickup_ready_customer_notified_at)
@@ -2588,6 +2646,87 @@ export default function AdminApp({ onLogout }) {
                     Usá formato sugerido (días + “HH:MM a HH:MM”) para que el bot lo interprete correctamente.
                   </span>
                 </label>
+
+                {SHOW_BOT_WHATSAPP_SWITCHES_IN_SETTINGS ? (
+                  <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-950/60 p-4 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-slate-200">Bot de WhatsApp</p>
+                        <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                          OFF: silencio total (sin respuestas ni registro de mensajes). ON: el bot funciona según la
+                          configuración de horario de abajo.
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span
+                          className={`text-xs font-bold uppercase tabular-nums ${
+                            botWhatsappEnabled ? "text-emerald-400" : "text-slate-500"
+                          }`}
+                        >
+                          {botWhatsappEnabled ? "On" : "Off"}
+                        </span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={botWhatsappEnabled}
+                          aria-label={
+                            botWhatsappEnabled ? "Desactivar bot de WhatsApp" : "Activar bot de WhatsApp"
+                          }
+                          onClick={() => setBotWhatsappEnabled((v) => !v)}
+                          className={`relative h-9 w-[3.25rem] shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${
+                            botWhatsappEnabled ? "bg-emerald-600" : "bg-slate-600"
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-1 h-7 w-7 rounded-full bg-white shadow transition-transform ${
+                              botWhatsappEnabled ? "translate-x-[1.35rem]" : "translate-x-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="border-t border-slate-700/80 pt-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-slate-200">Respetar horario de atención</p>
+                          <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                            Solo aplica con el bot en ON. On: fuera del horario no procesa mensajes (como antes). Off:
+                            responde en cualquier momento; el texto de horario sigue disponible para la IA.
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span
+                            className={`text-xs font-bold uppercase tabular-nums ${
+                              botEnforceOpeningHours ? "text-emerald-400" : "text-slate-500"
+                            }`}
+                          >
+                            {botEnforceOpeningHours ? "On" : "Off"}
+                          </span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={botEnforceOpeningHours}
+                            aria-label={
+                              botEnforceOpeningHours
+                                ? "No aplicar cierre por horario"
+                                : "Aplicar cierre por horario"
+                            }
+                            onClick={() => setBotEnforceOpeningHours((v) => !v)}
+                            className={`relative h-9 w-[3.25rem] shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 ${
+                              botEnforceOpeningHours ? "bg-emerald-600" : "bg-slate-600"
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-1 h-7 w-7 rounded-full bg-white shadow transition-transform ${
+                                botEnforceOpeningHours ? "translate-x-[1.35rem]" : "translate-x-1"
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
                 <label className="block space-y-1 text-sm md:max-w-xs">
                   <span className="text-slate-300">Mesas del salón (numeradas)</span>

@@ -9,7 +9,7 @@ import MesaClientApp from "./screens/MesaClientApp";
 import { getSession, logout } from "./lib/auth";
 
 function homePathForRole(role) {
-  if (role === "admin" || role === "maestro") return "/admin";
+  if (role === "admin" || role === "maestro" || role === "encargado") return "/admin";
   if (role === "delivery") return "/delivery";
   if (role === "kitchen") return "/kitchen";
   if (role === "waiter") return "/waiter";
@@ -49,7 +49,7 @@ function AppRoutes() {
         element={
           !session ? (
             <Navigate to="/login" replace />
-          ) : session.role !== "admin" && session.role !== "maestro" ? (
+          ) : session.role !== "admin" && session.role !== "maestro" && session.role !== "encargado" ? (
             <Navigate to={homePathForRole(session.role)} replace />
           ) : (
             <AdminApp onLogout={handleLogout} />

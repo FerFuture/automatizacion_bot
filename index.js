@@ -419,6 +419,22 @@ function businessHoursForTenant(tenant) {
   return parsed || BUSINESS_HOURS;
 }
 
+/** Si es false en `restaurants.metadata.bot_whatsapp_enabled`, el bot no responde ni registra (silencio total). */
+function tenantBotWhatsappEnabled(tenant) {
+  const m = tenant?.metadata;
+  if (m == null || typeof m !== "object" || Array.isArray(m)) return true;
+  if (m.bot_whatsapp_enabled === false) return false;
+  return true;
+}
+
+/** Si es false en `restaurants.metadata.bot_enforce_opening_hours`, no se corta fuera de horario (solo si el bot está ON). */
+function tenantEnforcesOpeningHours(tenant) {
+  const m = tenant?.metadata;
+  if (m == null || typeof m !== "object" || Array.isArray(m)) return true;
+  if (m.bot_enforce_opening_hours === false) return false;
+  return true;
+}
+
 function parseTimeToMinutes(value) {
   const [h, m] = String(value || "")
     .split(":")
@@ -4137,22 +4153,28 @@ client.on("message", async (message) => {
       return;
     }
 
-    const tenantBusinessHours = businessHoursForTenant(tenant);
-    if (!isWithinBusinessHours(tenantBusinessHours)) {
-      try {
-        await saveInteraction({
-          restaurantId: tenant.id,
-          customerNumber,
-          botNumber,
-          messageType: message.type === "ptt" ? "audio" : "text",
-          userMessage: message.body || null,
-          botResponse: null,
-          metadata: { status: "out_of_hours", businessHours: tenantBusinessHours }
-        });
-      } catch (logErr) {
-        console.error("No pude registrar la interaccion fuera de horario:", logErr);
-      }
+    if (!tenantBotWhatsappEnabled(tenant)) {
       return;
+    }
+
+    if (tenantEnforcesOpeningHours(tenant)) {
+      const tenantBusinessHours = businessHoursForTenant(tenant);
+      if (!isWithinBusinessHours(tenantBusinessHours)) {
+        try {
+          await saveInteraction({
+            restaurantId: tenant.id,
+            customerNumber,
+            botNumber,
+            messageType: message.type === "ptt" ? "audio" : "text",
+            userMessage: message.body || null,
+            botResponse: null,
+            metadata: { status: "out_of_hours", businessHours: tenantBusinessHours }
+          });
+        } catch (logErr) {
+          console.error("No pude registrar la interaccion fuera de horario:", logErr);
+        }
+        return;
+      }
     }
 
     const restaurantContext = await getRestaurantContext(tenant.id);
