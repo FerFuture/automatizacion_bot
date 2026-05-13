@@ -39,6 +39,25 @@ function scheduledDeliveryIso(dateValue, timeValue) {
   return scheduled.toISOString();
 }
 
+function formatScheduledDeliveryTimeInput(rawValue) {
+  const digits = String(rawValue || "")
+    .replace(/\D/g, "")
+    .slice(0, 4);
+  if (!digits) return "";
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+function normalizeScheduledDeliveryTimeInput(rawValue) {
+  const digits = String(rawValue || "")
+    .replace(/\D/g, "")
+    .slice(0, 4);
+  if (!digits) return "";
+  if (digits.length === 3) return `0${digits.slice(0, 1)}:${digits.slice(1)}`;
+  if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  return digits;
+}
+
 /** Pedido originado en el panel Mozo (notas típicas), sin usar solo payment_method. */
 function orderFromWaiterPanel(order) {
   const notes = String(order?.notes || "").trim();
@@ -731,6 +750,7 @@ export default function WaiterApp({ onLogout }) {
                       ? "border-violet-500/50 bg-violet-500/20 text-violet-100"
                       : "border-slate-600 bg-slate-950 text-slate-300 hover:bg-slate-800"
                   }`}
+                  translate="no"
                 >
                   Mesa
                 </button>
@@ -746,6 +766,7 @@ export default function WaiterApp({ onLogout }) {
                       ? "border-sky-500/50 bg-sky-500/20 text-sky-100"
                       : "border-slate-600 bg-slate-950 text-slate-300 hover:bg-slate-800"
                   }`}
+                  translate="no"
                 >
                   Delivery
                 </button>
@@ -802,10 +823,19 @@ export default function WaiterApp({ onLogout }) {
                         Hora programada
                       </label>
                       <input
-                        type="time"
+                        type="text"
                         value={scheduledDeliveryTime}
+                        inputMode="numeric"
+                        placeholder="HH:MM"
+                        autoComplete="off"
+                        maxLength={5}
                         onChange={(e) => {
-                          setScheduledDeliveryTime(e.target.value);
+                          setScheduledDeliveryTime(formatScheduledDeliveryTimeInput(e.target.value));
+                          setDeliveryWarning("");
+                          setError("");
+                        }}
+                        onBlur={(e) => {
+                          setScheduledDeliveryTime(normalizeScheduledDeliveryTimeInput(e.target.value));
                           setDeliveryWarning("");
                           setError("");
                         }}
@@ -825,7 +855,10 @@ export default function WaiterApp({ onLogout }) {
                 </div>
               ) : (
                 <>
-                  <label className="block text-xs font-medium uppercase tracking-wider text-slate-400">
+                  <label
+                    className="block text-xs font-medium uppercase tracking-wider text-slate-400"
+                    translate="no"
+                  >
                     Mesa
                   </label>
                   <input
