@@ -43,6 +43,16 @@ const OPENING_HOURS_SUGGESTIONS = [
   "Lunes a Domingo de 19:00 a 02:00."
 ];
 
+function normalizeMenuCategoryInput(value) {
+  const text = String(value ?? "");
+  return text.toLocaleUpperCase("es-AR");
+}
+
+function normalizeMenuCategoryForStorage(value) {
+  const text = normalizeMenuCategoryInput(value).trim();
+  return text || null;
+}
+
 function canRevertCancellation(order) {
   if (normalizeOrderStatus(order) !== "cancelled") return false;
   const at = order.cancelled_at;
@@ -451,7 +461,12 @@ export default function AdminApp({ onLogout }) {
       return;
     }
 
-    setMenuItems(data || []);
+    setMenuItems(
+      (data || []).map((item) => ({
+        ...item,
+        category: normalizeMenuCategoryForStorage(item.category)
+      }))
+    );
     setLoadingMenu(false);
   }
 
@@ -1448,14 +1463,18 @@ export default function AdminApp({ onLogout }) {
 
   async function updateMenuItem(itemId, values) {
     setSavingItemId(itemId);
-    const { error: updateError } = await supabase.from("menu_items").update(values).eq("id", itemId);
+    const nextValues =
+      Object.prototype.hasOwnProperty.call(values, "category")
+        ? { ...values, category: normalizeMenuCategoryForStorage(values.category) }
+        : values;
+    const { error: updateError } = await supabase.from("menu_items").update(nextValues).eq("id", itemId);
     if (updateError) {
       setError(`Error guardando item: ${updateError.message}`);
       setSavingItemId(null);
       return false;
     }
 
-    setMenuItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, ...values } : item)));
+    setMenuItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, ...nextValues } : item)));
     setSavingItemId(null);
     return true;
   }
@@ -1466,7 +1485,7 @@ export default function AdminApp({ onLogout }) {
     setEditDraft({
       name: item.name || "",
       description: item.description || "",
-      category: item.category || "",
+      category: normalizeMenuCategoryInput(item.category || ""),
       price: item.price != null ? String(item.price) : ""
     });
   }
@@ -1491,7 +1510,7 @@ export default function AdminApp({ onLogout }) {
     const ok = await updateMenuItem(editingItemId, {
       name: editDraft.name.trim(),
       description: editDraft.description.trim() || null,
-      category: editDraft.category.trim() || null,
+      category: normalizeMenuCategoryForStorage(editDraft.category),
       price
     });
     if (ok) cancelEditMenuItem();
@@ -1519,7 +1538,7 @@ export default function AdminApp({ onLogout }) {
       restaurant_id: restaurantId,
       name: newItem.name.trim(),
       description: newItem.description.trim() || null,
-      category: newItem.category.trim() || null,
+      category: normalizeMenuCategoryForStorage(newItem.category),
       price,
       available: true
     };
@@ -1536,7 +1555,10 @@ export default function AdminApp({ onLogout }) {
       return;
     }
 
-    setMenuItems((prev) => [...prev, data]);
+    setMenuItems((prev) => [
+      ...prev,
+      { ...data, category: normalizeMenuCategoryForStorage(data.category) }
+    ]);
     setNewItem({ name: "", description: "", category: "", price: "" });
     setShowAddForm(false);
     setAddingItem(false);
@@ -2443,8 +2465,13 @@ export default function AdminApp({ onLogout }) {
                 />
                 <input
                   value={newItem.category}
-                  onChange={(event) => setNewItem((prev) => ({ ...prev, category: event.target.value }))}
-                  placeholder="Categoria"
+                  onChange={(event) =>
+                    setNewItem((prev) => ({
+                      ...prev,
+                      category: normalizeMenuCategoryInput(event.target.value)
+                    }))
+                  }
+                  placeholder="CATEGORIA"
                   className="h-10 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm"
                 />
                 <input
@@ -2500,7 +2527,9 @@ export default function AdminApp({ onLogout }) {
                   <div className="flex flex-col gap-4 md:flex-row md:flex-wrap md:items-start md:justify-between">
                     <div className="min-w-0 flex-1">
                       <h3 className="font-semibold text-slate-100">{item.name}</h3>
-                      <p className="text-sm text-slate-400">{item.category || "Sin categoria"}</p>
+                      <p className="text-sm text-slate-400">
+                        {normalizeMenuCategoryForStorage(item.category) || "Sin categoria"}
+                      </p>
                       <p className="mt-1 text-xs text-slate-500">{item.description || "Sin descripcion"}</p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -2564,9 +2593,12 @@ export default function AdminApp({ onLogout }) {
                       <input
                         value={editDraft.category}
                         onChange={(event) =>
-                          setEditDraft((prev) => ({ ...prev, category: event.target.value }))
+                          setEditDraft((prev) => ({
+                            ...prev,
+                            category: normalizeMenuCategoryInput(event.target.value)
+                          }))
                         }
-                        placeholder="Categoria (ej: combos, pizza)"
+                        placeholder="CATEGORIA (ej: COMBOS, PIZZA)"
                         className="h-10 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm"
                       />
                       <input

@@ -1756,7 +1756,14 @@ function buildMenuLinesForWhatsApp(menuItems = [], tenant = null, options = {}) 
   const brand = resolvePublicBrandName({ restaurant: tenant || {} });
   const bot = resolveBotDisplayName();
   const header = `*${bot} · ${brand}*\n\n`;
-  const valid = (menuItems || []).filter((item) => Number(item?.price) > 0 && String(item?.name || "").trim());
+  const valid = (menuItems || []).filter((item) => {
+    const category = String(item?.category || "").trim();
+    return (
+      Number(item?.price) > 0 &&
+      String(item?.name || "").trim() &&
+      !shouldHideMenuCategoryOnWhatsApp(category)
+    );
+  });
   const sectionKey = (options.sectionKey || "").trim();
   const sectionLabel =
     options.sectionLabel ||
@@ -1767,10 +1774,32 @@ function buildMenuLinesForWhatsApp(menuItems = [], tenant = null, options = {}) 
       : "Ahora mismo no hay productos disponibles en el menu.";
     return `${header}${emptyMsg}`;
   }
-  const lines = valid.map((item) => `- ${item.name} (${formatTotal(item.price)})`);
+  const byCategory = new Map();
+  for (const item of valid) {
+    const category = formatMenuCategoryHeading(item.category);
+    if (!byCategory.has(category)) byCategory.set(category, []);
+    byCategory.get(category).push(item);
+  }
+
+  const sections = Array.from(byCategory.entries())
+    .sort((a, b) =>
+      String(a[0]).localeCompare(String(b[0]), "es", { sensitivity: "base", numeric: true })
+    )
+    .map(([category, items]) => {
+      const lines = [...items]
+        .sort((a, b) =>
+          String(a?.name || "").localeCompare(String(b?.name || ""), "es", {
+            sensitivity: "base",
+            numeric: true
+          })
+        )
+        .map((item) => `- ${item.name} (${formatTotal(item.price)})`);
+      return [`*${category}*`, ...lines].join("\n");
+    });
+
   const intro = sectionKey
-    ? `Aqui tenes la seccion *${sectionLabel}*:\n${lines.join("\n")}`
-    : `Aqui tienes el menu disponible:\n${lines.join("\n")}`;
+    ? `Aqui tenes la seccion *${sectionLabel}*:\n\n${sections.join("\n\n")}`
+    : `Aqui tienes el menu disponible:\n\n${sections.join("\n\n")}`;
   return `${header}${intro}`;
 }
 
@@ -1786,6 +1815,17 @@ function normalizeTextForMatch(text) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+}
+
+function shouldHideMenuCategoryOnWhatsApp(category) {
+  const normalized = normalizeTextForMatch(String(category || "").trim());
+  if (!normalized) return false;
+  return normalized.includes("calle") || normalized.includes("llevar");
+}
+
+function formatMenuCategoryHeading(category) {
+  const raw = String(category || "").trim() || "OTROS";
+  return raw.toLocaleUpperCase("es-AR");
 }
 
 function normalizeForItemMatch(text) {
