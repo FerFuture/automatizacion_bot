@@ -79,6 +79,7 @@ export default function WaiterApp({ onLogout }) {
   const [botNumber, setBotNumber] = useState("");
   const [waiterFulfillmentSelectorEnabled, setWaiterFulfillmentSelectorEnabled] = useState(false);
   const [menuItems, setMenuItems] = useState([]);
+  const [menuSearchQuery, setMenuSearchQuery] = useState("");
   const [orders, setOrders] = useState([]);
   const [cartById, setCartById] = useState({});
   const [fulfillmentType, setFulfillmentType] = useState("mesa");
@@ -164,7 +165,7 @@ export default function WaiterApp({ onLogout }) {
     async function loadMenu() {
       const { data, error: queryError } = await supabase
         .from("menu_items")
-        .select("id, name, price, category")
+        .select("id, name, price, category, description")
         .eq("restaurant_id", restaurantId)
         .eq("available", true)
         .order("name", { ascending: true });
@@ -610,8 +611,25 @@ export default function WaiterApp({ onLogout }) {
   }
 
   const groupedMenu = useMemo(() => {
+    const raw = String(menuSearchQuery || "").trim().toLowerCase();
+    const words = raw ? raw.split(/\s+/).filter(Boolean) : [];
+    const filteredItems =
+      words.length === 0
+        ? menuItems
+        : menuItems.filter((item) => {
+            const haystack = [
+              item.name,
+              item.category,
+              item.description,
+              item.price != null ? String(item.price) : ""
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase();
+            return words.every((word) => haystack.includes(word));
+          });
     const byCat = new Map();
-    for (const it of menuItems) {
+    for (const it of filteredItems) {
       const cat = String(it.category || "Otros").trim() || "Otros";
       if (!byCat.has(cat)) byCat.set(cat, []);
       byCat.get(cat).push(it);
@@ -629,7 +647,12 @@ export default function WaiterApp({ onLogout }) {
       String(a[0]).localeCompare(String(b[0]), "es", { sensitivity: "base", numeric: true })
     );
     return entries;
-  }, [menuItems]);
+  }, [menuItems, menuSearchQuery]);
+
+  const filteredMenuItemsCount = useMemo(
+    () => groupedMenu.reduce((acc, [, items]) => acc + items.length, 0),
+    [groupedMenu]
+  );
 
   return (
     <div className="dark min-h-screen bg-slate-950 text-slate-100">
@@ -832,8 +855,39 @@ export default function WaiterApp({ onLogout }) {
               )}
             </div>
 
+            {menuItems.length > 0 ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                <label className="block">
+                  <span className="sr-only">Buscar productos</span>
+                  <input
+                    type="search"
+                    value={menuSearchQuery}
+                    onChange={(e) => setMenuSearchQuery(e.target.value)}
+                    placeholder="Buscar por nombre, categoria, descripcion o precio..."
+                    autoComplete="off"
+                    className="h-10 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                  />
+                </label>
+                {menuSearchQuery.trim() ? (
+                  <p className="mt-2 text-xs text-slate-500">
+                    {filteredMenuItemsCount === menuItems.length
+                      ? `${menuItems.length} productos`
+                      : `${filteredMenuItemsCount} de ${menuItems.length} productos`}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             {loading ? (
               <p className="text-slate-400">Cargando menú…</p>
+            ) : menuItems.length === 0 ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-400">
+                No hay productos disponibles en este momento.
+              </div>
+            ) : filteredMenuItemsCount === 0 ? (
+              <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-400">
+                No hay productos que coincidan con &quot;{menuSearchQuery.trim()}&quot;.
+              </div>
             ) : (
               groupedMenu.map(([category, items]) => (
                 <section key={category}>

@@ -79,6 +79,7 @@ export default function MesaClientApp() {
   const [mpEnabled, setMpEnabled] = useState(false);
 
   const [menuItems, setMenuItems] = useState([]);
+  const [menuSearchQuery, setMenuSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -106,7 +107,26 @@ export default function MesaClientApp() {
   const cartLines = useMemo(() => buildCartLines(cartById, menuById), [cartById, menuById]);
   const totalAmount = useMemo(() => cartTotal(cartById, menuById), [cartById, menuById]);
 
-  const groupedMenu = useMemo(() => groupMenuByCategory(menuItems), [menuItems]);
+  const menuItemsFiltered = useMemo(() => {
+    const raw = String(menuSearchQuery || "").trim().toLowerCase();
+    if (!raw) return menuItems;
+
+    const words = raw.split(/\s+/).filter(Boolean);
+    return menuItems.filter((item) => {
+      const haystack = [
+        item.name,
+        item.category,
+        item.description,
+        item.price != null ? String(item.price) : ""
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return words.every((word) => haystack.includes(word));
+    });
+  }, [menuItems, menuSearchQuery]);
+
+  const groupedMenu = useMemo(() => groupMenuByCategory(menuItemsFiltered), [menuItemsFiltered]);
 
   const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:3000`;
   const configuredApiBase = String(import.meta.env.VITE_MESA_API_BASE_URL || "").trim();
@@ -220,7 +240,7 @@ export default function MesaClientApp() {
       try {
         const { data, error: queryError } = await supabase
           .from("menu_items")
-          .select("id, name, price, category")
+          .select("id, name, price, category, description")
           .eq("restaurant_id", restaurantId)
           .eq("available", true)
           .order("name", { ascending: true });
@@ -570,6 +590,35 @@ export default function MesaClientApp() {
             )}
           </section>
         )}
+
+        {menuItems.length > 0 ? (
+          <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+            <label className="block">
+              <span className="sr-only">Buscar productos</span>
+              <input
+                type="search"
+                value={menuSearchQuery}
+                onChange={(e) => setMenuSearchQuery(e.target.value)}
+                placeholder="Buscar por nombre, categoria, descripcion o precio..."
+                autoComplete="off"
+                className="h-10 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+              />
+            </label>
+            {menuSearchQuery.trim() ? (
+              <p className="text-xs text-slate-500">
+                {menuItemsFiltered.length === menuItems.length
+                  ? `${menuItems.length} productos`
+                  : `${menuItemsFiltered.length} de ${menuItems.length} productos`}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+
+        {menuItems.length > 0 && menuItemsFiltered.length === 0 ? (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-center text-slate-300">
+            No hay productos que coincidan con &quot;{menuSearchQuery.trim()}&quot;.
+          </div>
+        ) : null}
 
         <section className="space-y-5">
           {groupedMenu.map(([category, items]) => (
