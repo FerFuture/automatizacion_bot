@@ -414,7 +414,35 @@ function parseBusinessHoursFromOpeningHours(rawText) {
   };
 }
 
+function parseBusinessHoursFromMetadata(tenant) {
+  const raw = tenant?.metadata?.business_hours;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+  const openDays = [...new Set((Array.isArray(raw.open_days) ? raw.open_days : []).map(Number))]
+    .filter((day) => day >= 1 && day <= 7)
+    .sort((a, b) => a - b);
+  const openTime = String(raw.open_time || "").trim();
+  const closeTime = String(raw.close_time || "").trim();
+
+  if (
+    !openDays.length ||
+    !/^([01]\d|2[0-3]):[0-5]\d$/.test(openTime) ||
+    !/^([01]\d|2[0-3]):[0-5]\d$/.test(closeTime)
+  ) {
+    return null;
+  }
+
+  return {
+    timezone: BUSINESS_HOURS.timezone,
+    openTime,
+    closeTime,
+    openDays
+  };
+}
+
 function businessHoursForTenant(tenant) {
+  const fromMetadata = parseBusinessHoursFromMetadata(tenant);
+  if (fromMetadata) return fromMetadata;
   const parsed = parseBusinessHoursFromOpeningHours(tenant?.opening_hours);
   return parsed || BUSINESS_HOURS;
 }

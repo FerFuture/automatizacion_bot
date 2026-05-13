@@ -34,14 +34,38 @@ import MesaQrLinksPanel from "../components/MesaQrLinksPanel";
 import OrdersDateRangeCalendar from "../components/OrdersDateRangeCalendar";
 import { fetchRestaurantForDashboard } from "../lib/restaurantTenant";
 import { getSession } from "../lib/auth";
+import { WEEKDAY_OPTIONS } from "../lib/deliverySchedule";
 
 const CANCEL_REVERT_WINDOW_MS = 30 * 60 * 1000;
-const OPENING_HOURS_SUGGESTIONS = [
-  "Lunes a Sábado de 12:00 a 23:30. Domingo cerrado.",
-  "Todos los días de 10:00 a 22:00.",
-  "Lunes a Viernes de 08:30 a 18:00.",
-  "Lunes a Domingo de 19:00 a 02:00."
-];
+const BUSINESS_HOUR_WEEKDAY_OPTIONS = WEEKDAY_OPTIONS.map(({ value, label }) => ({
+  value: value === 0 ? 7 : value,
+  label
+}));
+const ALL_BUSINESS_HOUR_DAY_VALUES = BUSINESS_HOUR_WEEKDAY_OPTIONS.map(({ value }) => value);
+const BUSINESS_DAY_NAMES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+const BUSINESS_DAY_ALIASES = {
+  lunes: 1,
+  lun: 1,
+  martes: 2,
+  mar: 2,
+  miercoles: 3,
+  mie: 3,
+  mier: 3,
+  jueves: 4,
+  jue: 4,
+  viernes: 5,
+  vie: 5,
+  sabado: 6,
+  sab: 6,
+  domingo: 7,
+  dom: 7
+};
+const BUSINESS_DAY_ALIAS_KEYS = Object.keys(BUSINESS_DAY_ALIASES).sort((a, b) => b.length - a.length);
+const BUSINESS_DAY_ALIAS_REGEX = new RegExp(`\\b(${BUSINESS_DAY_ALIAS_KEYS.join("|")})s?\\b`, "g");
+const BUSINESS_DAY_RANGE_REGEX = new RegExp(
+  `\\b(${BUSINESS_DAY_ALIAS_KEYS.join("|")})s?\\b\\s*(?:a|al|hasta|-)\\s*\\b(${BUSINESS_DAY_ALIAS_KEYS.join("|")})s?\\b`,
+  "g"
+);
 
 function normalizeMenuCategoryInput(value) {
   const text = String(value ?? "");
@@ -51,6 +75,202 @@ function normalizeMenuCategoryInput(value) {
 function normalizeMenuCategoryForStorage(value) {
   const text = normalizeMenuCategoryInput(value).trim();
   return text || null;
+}
+
+function stripDiacritics(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeBusinessHoursText(value) {
+  return stripDiacritics(value).toLowerCase().replace(/[|]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeBusinessOpenDays(days) {
+  return [...new Set((Array.isArray(days) ? days : []).map(Number))]
+    .filter((day) => day >= 1 && day <= 7)
+    .sort((a, b) => a - b);
+}
+
+function formatBusinessHourInput(rawValue) {
+  const digits = String(rawValue || "")
+    .replace(/\D/g, "")
+    .slice(0, 4);
+  if (!digits) return "";
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+function normalizeBusinessHourValue(rawValue) {
+  const digits = String(rawValue || "")
+    .replace(/\D/g, "")
+    .slice(0, 4);
+  if (!digits) return "";
+  if (digits.length === 3) return `0${digits.slice(0, 1)}:${digits.slice(1)}`;
+  if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  return digits;
+}
+
+function isValidBusinessHourValue(value) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || ""));
+}
+
+function dayNumberFromBusinessAlias(raw) {
+  const key = String(raw || "").toLowerCase().trim();
+  return BUSINESS_DAY_ALIASES[key] || null;
+}
+
+function addBusinessDayRange(targetSet, fromDay, toDay) {
+  if (!fromDay || !toDay) return;
+  if (fromDay <= toDay) {
+    for (let day = fromDay; day <= toDay; day += 1) targetSet.add(day);
+    return;
+  }
+  for (let day = fromDay; day <= 7; day += 1) targetSet.add(day);
+  for (let day = 1; day <= toDay; day += 1) targetSet.add(day);
+}
+
+function parseBusinessOpenDaysFromText(rawText) {
+  const text = normalizeBusinessHoursText(rawText);
+  if (!text) return null;
+  if (/\btodos?\s+los?\s+dias\b/.test(text)) return [...ALL_BUSINESS_HOUR_DAY_VALUES];
+
+  const openSet = new Set();
+  BUSINESS_DAY_RANGE_REGEX.lastIndex = 0;
+  let rangeMatch = BUSINESS_DAY_RANGE_REGEX.exec(text);
+  while (rangeMatch) {
+    addBusinessDayRange(
+      openSet,
+      dayNumberFromBusinessAlias(rangeMatch[1]),
+      dayNumberFromBusinessAlias(rangeMatch[2])
+    );
+    rangeMatch = BUSINESS_DAY_RANGE_REGEX.exec(text);
+  }
+
+  BUSINESS_DAY_ALIAS_REGEX.lastIndex = 0;
+  let singleMatch = BUSINESS_DAY_ALIAS_REGEX.exec(text);
+  while (singleMatch) {
+    const dayNum = dayNumberFromBusinessAlias(singleMatch[1]);
+    if (dayNum) openSet.add(dayNum);
+    singleMatch = BUSINESS_DAY_ALIAS_REGEX.exec(text);
+  }
+
+  const closedSet = new Set();
+  for (const dayAlias of BUSINESS_DAY_ALIAS_KEYS) {
+    const reA = new RegExp(`\\b${dayAlias}s?\\b[^.\\n\\r]{0,24}\\bcerrad`, "i");
+    const reB = new RegExp(`\\bcerrad[^.\\n\\r]{0,24}\\b${dayAlias}s?\\b`, "i");
+    if (reA.test(text) || reB.test(text)) {
+      const dayNum = dayNumberFromBusinessAlias(dayAlias);
+      if (dayNum) closedSet.add(dayNum);
+    }
+  }
+  for (const dayNum of closedSet) openSet.delete(dayNum);
+
+  const out = [...openSet].sort((a, b) => a - b);
+  return out.length ? out : null;
+}
+
+function parseBusinessHoursFromOpeningHoursText(rawText) {
+  const text = normalizeBusinessHoursText(rawText);
+  if (!text) return null;
+
+  const timeMatches = [...text.matchAll(/\b([01]?\d|2[0-3])[:.]([0-5]\d)\b/g)];
+  if (timeMatches.length < 2) return null;
+  const openTime = `${String(timeMatches[0][1]).padStart(2, "0")}:${timeMatches[0][2]}`;
+  const closeTime = `${String(timeMatches[1][1]).padStart(2, "0")}:${timeMatches[1][2]}`;
+  const openDays = parseBusinessOpenDaysFromText(text) || [...ALL_BUSINESS_HOUR_DAY_VALUES];
+
+  return { openDays, openTime, closeTime };
+}
+
+function parseBusinessHoursFromMetadata(metadata) {
+  const raw = metadata?.business_hours;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const openDays = normalizeBusinessOpenDays(raw.open_days);
+  const openTime = normalizeBusinessHourValue(raw.open_time || "");
+  const closeTime = normalizeBusinessHourValue(raw.close_time || "");
+  if (!openDays.length || !isValidBusinessHourValue(openTime) || !isValidBusinessHourValue(closeTime)) {
+    return null;
+  }
+  return { openDays, openTime, closeTime };
+}
+
+function formatBusinessDays(days) {
+  const normalized = normalizeBusinessOpenDays(days);
+  if (!normalized.length) return "";
+  if (normalized.length === 7) return "Todos los días";
+  let run = [normalized[0]];
+  const ranges = [];
+  for (let i = 1; i < normalized.length; i += 1) {
+    if (normalized[i] === run[run.length - 1] + 1) run.push(normalized[i]);
+    else {
+      ranges.push(run);
+      run = [normalized[i]];
+    }
+  }
+  ranges.push(run);
+  return ranges
+    .map((range) =>
+      range.length === 1
+        ? BUSINESS_DAY_NAMES[range[0] - 1]
+        : `${BUSINESS_DAY_NAMES[range[0] - 1]} a ${BUSINESS_DAY_NAMES[range[range.length - 1] - 1]}`
+    )
+    .join(", ");
+}
+
+function buildOpeningHoursText(openDays, openTime, closeTime) {
+  const normalizedDays = normalizeBusinessOpenDays(openDays);
+  if (
+    !normalizedDays.length ||
+    !isValidBusinessHourValue(openTime) ||
+    !isValidBusinessHourValue(closeTime)
+  ) {
+    return "";
+  }
+  return `${formatBusinessDays(normalizedDays)} de ${openTime} a ${closeTime}.`;
+}
+
+function resolveBusinessHoursFormState(openingHours, metadata) {
+  const fromMetadata = parseBusinessHoursFromMetadata(metadata);
+  if (fromMetadata) return fromMetadata;
+  const fromText = parseBusinessHoursFromOpeningHoursText(openingHours);
+  if (fromText) return fromText;
+  return {
+    openDays: [...ALL_BUSINESS_HOUR_DAY_VALUES],
+    openTime: "",
+    closeTime: ""
+  };
+}
+
+function WeekdayToggle({ value, onChange, disabled }) {
+  function toggle(day) {
+    const set = new Set(normalizeBusinessOpenDays(value));
+    if (set.has(day)) set.delete(day);
+    else set.add(day);
+    onChange([...set].sort((a, b) => a - b));
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {BUSINESS_HOUR_WEEKDAY_OPTIONS.map(({ value: dayValue, label }) => {
+        const on = value.includes(dayValue);
+        return (
+          <button
+            key={dayValue}
+            type="button"
+            disabled={disabled}
+            onClick={() => toggle(dayValue)}
+            className={`rounded-lg border px-2 py-1 text-[11px] font-medium transition disabled:opacity-50 ${
+              on
+                ? "border-emerald-500/60 bg-emerald-500/20 text-emerald-200"
+                : "border-slate-700 bg-slate-950 text-slate-500 hover:border-slate-600"
+            }`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function canRevertCancellation(order) {
@@ -201,6 +421,9 @@ export default function AdminApp({ onLogout }) {
     /** Cantidad de mesas numeradas (1..N) para pedidos “en mesa” por WhatsApp. */
     table_count: "12",
     opening_hours: "",
+    opening_days: [...ALL_BUSINESS_HOUR_DAY_VALUES],
+    opening_time_from: "",
+    opening_time_to: "",
     policies: ""
   });
   /** false = bot solo retiro; ocultar UI de delivery en admin. Por defecto true si la columna aún no existe. */
@@ -498,6 +721,11 @@ export default function AdminApp({ onLogout }) {
         : data.policies
           ? JSON.stringify(data.policies, null, 2)
           : "";
+    const metadataObj =
+      data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
+        ? data.metadata
+        : {};
+    const businessHoursState = resolveBusinessHoursFormState(data.opening_hours || "", metadataObj);
 
     setRestaurantConfig({
       name: data.name || "",
@@ -509,12 +737,11 @@ export default function AdminApp({ onLogout }) {
           ? String(data.table_count)
           : "12",
       opening_hours: data.opening_hours || "",
+      opening_days: businessHoursState.openDays,
+      opening_time_from: businessHoursState.openTime,
+      opening_time_to: businessHoursState.closeTime,
       policies: policiesAsText
     });
-    const metadataObj =
-      data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
-        ? data.metadata
-        : {};
 
     setDeliveryEnabled(data.delivery_enabled !== false);
     setLocalEnabled(data.local_enabled !== false);
@@ -553,6 +780,25 @@ export default function AdminApp({ onLogout }) {
     const tcRaw = parseInt(String(restaurantConfig.table_count || "").trim(), 10);
     const tableCountDb =
       Number.isFinite(tcRaw) && tcRaw >= 1 && tcRaw <= 500 ? tcRaw : 12;
+    const openingDays = normalizeBusinessOpenDays(restaurantConfig.opening_days);
+    const openingTimeFrom = normalizeBusinessHourValue(restaurantConfig.opening_time_from);
+    const openingTimeTo = normalizeBusinessHourValue(restaurantConfig.opening_time_to);
+    const hasBusinessHoursInput =
+      openingDays.length !== ALL_BUSINESS_HOUR_DAY_VALUES.length || openingTimeFrom || openingTimeTo;
+    const canBuildBusinessHours =
+      openingDays.length > 0 &&
+      isValidBusinessHourValue(openingTimeFrom) &&
+      isValidBusinessHourValue(openingTimeTo);
+
+    if (hasBusinessHoursInput && !canBuildBusinessHours) {
+      setError("Completá los días de atención y las horas Desde / Hasta en formato HH:MM.");
+      setSavingConfig(false);
+      return;
+    }
+
+    const openingHoursText = canBuildBusinessHours
+      ? buildOpeningHoursText(openingDays, openingTimeFrom, openingTimeTo)
+      : restaurantConfig.opening_hours.trim() || null;
 
     const patch = {
       name: nameTrimmed,
@@ -560,7 +806,7 @@ export default function AdminApp({ onLogout }) {
       address: restaurantConfig.address.trim() || null,
       delivery_zones: restaurantConfig.delivery_zones.trim() || null,
       table_count: tableCountDb,
-      opening_hours: restaurantConfig.opening_hours.trim() || null,
+      opening_hours: openingHoursText,
       policies: restaurantConfig.policies.trim() || null
     };
 
@@ -572,7 +818,14 @@ export default function AdminApp({ onLogout }) {
       ...metadataBase,
       bot_runtime_switches_visible: Boolean(botRuntimeSwitchesVisible),
       bot_whatsapp_enabled: Boolean(botWhatsappEnabled),
-      bot_enforce_opening_hours: Boolean(botEnforceOpeningHours)
+      bot_enforce_opening_hours: Boolean(botEnforceOpeningHours),
+      business_hours: canBuildBusinessHours
+        ? {
+            open_days: openingDays,
+            open_time: openingTimeFrom,
+            close_time: openingTimeTo
+          }
+        : metadataBase.business_hours ?? null
     };
 
     // `.single()` obliga error cuando UPDATE no devuelve exactamente 1 fila (0 por RLS, UUID mal, etc.).
@@ -629,7 +882,10 @@ export default function AdminApp({ onLogout }) {
         data.table_count != null && data.table_count !== ""
           ? String(data.table_count)
           : "12",
-      opening_hours: data.opening_hours || "",
+      opening_hours: data.opening_hours || openingHoursText || "",
+      opening_days: canBuildBusinessHours ? openingDays : restaurantConfig.opening_days,
+      opening_time_from: canBuildBusinessHours ? openingTimeFrom : restaurantConfig.opening_time_from,
+      opening_time_to: canBuildBusinessHours ? openingTimeTo : restaurantConfig.opening_time_to,
       policies: policiesAsText
     });
     if (data.name) setRestaurantName(data.name);
@@ -2752,29 +3008,105 @@ export default function AdminApp({ onLogout }) {
                   </span>
                 </label>
 
-                <label className="block space-y-1 text-sm">
+                <div className="block space-y-3 text-sm">
                   <span className="text-slate-300">Horario de atención</span>
-                  <input
-                    list="opening-hours-suggestions"
-                    value={restaurantConfig.opening_hours}
-                    onChange={(event) =>
-                      setRestaurantConfig((prev) => ({
-                        ...prev,
-                        opening_hours: event.target.value
-                      }))
-                    }
-                    placeholder="Ej: Lunes a Sábado de 12:00 a 23:30. Domingos cerrado."
-                    className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm"
-                  />
-                  <datalist id="opening-hours-suggestions">
-                    {OPENING_HOURS_SUGGESTIONS.map((entry) => (
-                      <option key={entry} value={entry} />
-                    ))}
-                  </datalist>
-                  <span className="block text-xs text-slate-500">
-                    Usá formato sugerido (días + “HH:MM a HH:MM”) para que el bot lo interprete correctamente.
-                  </span>
-                </label>
+                  <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-4 space-y-4">
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                        Días de atención
+                      </span>
+                      <WeekdayToggle
+                        value={restaurantConfig.opening_days}
+                        onChange={(days) =>
+                          setRestaurantConfig((prev) => ({
+                            ...prev,
+                            opening_days: days
+                          }))
+                        }
+                        disabled={savingConfig}
+                      />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                          Desde
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          maxLength={5}
+                          value={restaurantConfig.opening_time_from}
+                          onChange={(event) =>
+                            setRestaurantConfig((prev) => ({
+                              ...prev,
+                              opening_time_from: formatBusinessHourInput(event.target.value)
+                            }))
+                          }
+                          onBlur={(event) =>
+                            setRestaurantConfig((prev) => ({
+                              ...prev,
+                              opening_time_from: normalizeBusinessHourValue(event.target.value)
+                            }))
+                          }
+                          placeholder="HH:MM"
+                          className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+                          Hasta
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          maxLength={5}
+                          value={restaurantConfig.opening_time_to}
+                          onChange={(event) =>
+                            setRestaurantConfig((prev) => ({
+                              ...prev,
+                              opening_time_to: formatBusinessHourInput(event.target.value)
+                            }))
+                          }
+                          onBlur={(event) =>
+                            setRestaurantConfig((prev) => ({
+                              ...prev,
+                              opening_time_to: normalizeBusinessHourValue(event.target.value)
+                            }))
+                          }
+                          placeholder="HH:MM"
+                          className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm"
+                        />
+                      </label>
+                    </div>
+                    <span className="block text-xs text-slate-500">
+                      El bot seguirá en silencio fuera de este horario si el switch
+                      <strong className="text-slate-400"> Respetar horario de atención </strong>
+                      está en ON.
+                    </span>
+                    {buildOpeningHoursText(
+                      restaurantConfig.opening_days,
+                      normalizeBusinessHourValue(restaurantConfig.opening_time_from),
+                      normalizeBusinessHourValue(restaurantConfig.opening_time_to)
+                    ) ? (
+                      <span className="block text-xs text-slate-500">
+                        Resumen:{" "}
+                        <strong className="text-slate-300">
+                          {buildOpeningHoursText(
+                            restaurantConfig.opening_days,
+                            normalizeBusinessHourValue(restaurantConfig.opening_time_from),
+                            normalizeBusinessHourValue(restaurantConfig.opening_time_to)
+                          )}
+                        </strong>
+                      </span>
+                    ) : restaurantConfig.opening_hours ? (
+                      <span className="block text-xs text-amber-300">
+                        Horario actual heredado: {restaurantConfig.opening_hours}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
 
                 {botRuntimeSwitchesVisible ? (
                   <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-950/60 p-4 text-sm">
