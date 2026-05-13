@@ -2907,6 +2907,8 @@ export default function AdminApp({ onLogout }) {
             <MesaQrLinksPanel
               restaurantId={restaurantId}
               qrModuleEnabled={mesaQrEnabled}
+              restaurantMetadata={restaurantMetadata}
+              onRestaurantMetadataChange={setRestaurantMetadata}
               tableCount={Math.min(
                 500,
                 Math.max(1, parseInt(String(restaurantConfig.table_count || "12").trim(), 10) || 12)

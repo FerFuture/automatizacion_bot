@@ -111,6 +111,22 @@ function isMesaQrModuleEnabled(restaurant) {
   return meta?.mesa_qr_enabled !== false;
 }
 
+function normalizeMesaQrBlockedTables(value, maxTableCount = 500) {
+  if (!Array.isArray(value)) return [];
+  const max = Number.isFinite(maxTableCount) && maxTableCount >= 1 ? Math.floor(maxTableCount) : 500;
+  return [...new Set(value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry >= 1 && entry <= max))]
+    .sort((a, b) => a - b);
+}
+
+function isMesaQrTableBlocked(restaurant, tableNumber) {
+  const meta =
+    restaurant && typeof restaurant.metadata === "object" && !Array.isArray(restaurant.metadata)
+      ? restaurant.metadata
+      : null;
+  const blockedTables = normalizeMesaQrBlockedTables(meta?.mesa_qr_blocked_tables, Number(restaurant?.table_count) || 500);
+  return blockedTables.includes(Number(tableNumber));
+}
+
 const mesaApiServer = http.createServer(async (req, res) => {
   // CORS para el panel web (Vite suele correr en otro puerto).
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -200,6 +216,9 @@ const mesaApiServer = http.createServer(async (req, res) => {
     if (wantsMp && !mpEnabled) return sendJson(res, 409, { error: "Mercado Pago deshabilitado para este local" });
     if (!isMesaQrModuleEnabled(restaurant)) {
       return sendJson(res, 409, { error: "Carta QR por mesas deshabilitada" });
+    }
+    if (isMesaQrTableBlocked(restaurant, tableNumber)) {
+      return sendJson(res, 409, { error: `La mesa ${tableNumber} está bloqueada para pedidos QR.` });
     }
 
     const menuByName = new Map();

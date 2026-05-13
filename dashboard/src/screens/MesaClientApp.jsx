@@ -64,6 +64,13 @@ function shouldHideMesaQrCategory(category) {
   return normalized.includes("calle") || normalized.includes("llevar");
 }
 
+function normalizeBlockedMesaTables(value, maxTableCount = 500) {
+  if (!Array.isArray(value)) return [];
+  const max = Number.isFinite(maxTableCount) && maxTableCount >= 1 ? Math.floor(maxTableCount) : 500;
+  return [...new Set(value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry >= 1 && entry <= max))]
+    .sort((a, b) => a - b);
+}
+
 const MESA_QR_TOKEN_REQUIRED = true;
 /** Pedido a cocina puede ir por proxy Vercel → VPS; algo más alto que antes. */
 const API_REQUEST_TIMEOUT_MS = 15000;
@@ -87,6 +94,7 @@ export default function MesaClientApp() {
 
   const [restaurantId, setRestaurantId] = useState("");
   const [restaurantName, setRestaurantName] = useState("");
+  const [blockedTables, setBlockedTables] = useState([]);
 
   const [mesaEnabled, setMesaEnabled] = useState(false);
   const [cashEnabled, setCashEnabled] = useState(false);
@@ -146,6 +154,7 @@ export default function MesaClientApp() {
   }, [menuSearchQuery, visibleMenuItems]);
 
   const groupedMenu = useMemo(() => groupMenuByCategory(menuItemsFiltered), [menuItemsFiltered]);
+  const mesaBlocked = parsedTableNumber != null && blockedTables.includes(parsedTableNumber);
 
   const defaultApiBase = `${window.location.protocol}//${window.location.hostname}:3000`;
   const configuredApiBase = String(import.meta.env.VITE_MESA_API_BASE_URL || "").trim();
@@ -231,6 +240,7 @@ export default function MesaClientApp() {
             ? data.metadata
             : {};
         setMesaEnabled(metadataObj.mesa_qr_enabled !== false);
+        setBlockedTables(normalizeBlockedMesaTables(metadataObj.mesa_qr_blocked_tables, Number(data.table_count) || 500));
         setCashEnabled(data.cash_enabled !== false);
         setMpEnabled(data.mercadopago_enabled !== false);
 
@@ -404,6 +414,10 @@ export default function MesaClientApp() {
       setError("Este enlace no es válido. Escaneá el código QR de tu mesa.");
       return;
     }
+    if (mesaBlocked) {
+      setError(`La mesa ${parsedTableNumber} está bloqueada para pedidos QR. Consultá al personal.`);
+      return;
+    }
     if (!restaurantId) {
       setError("Falta configuración del restaurante.");
       return;
@@ -531,6 +545,20 @@ export default function MesaClientApp() {
           <p className="mt-2 text-sm text-slate-400">
             Abrí este panel escaneando el código QR de tu mesa (no uses solo el número en la URL).
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (mesaBlocked) {
+    return (
+      <div className="dark min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-2xl border border-rose-500/35 bg-slate-900/60 p-6 text-center">
+          <p className="text-lg font-semibold text-rose-100">Mesa bloqueada</p>
+          <p className="mt-2 text-sm text-slate-300">
+            La mesa {parsedTableNumber} no está habilitada para recibir pedidos desde la carta QR.
+          </p>
+          <p className="mt-2 text-sm text-slate-400">Consultá con el personal para habilitarla nuevamente.</p>
         </div>
       </div>
     );

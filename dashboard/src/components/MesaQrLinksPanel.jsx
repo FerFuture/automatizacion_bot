@@ -2,6 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { jsPDF } from "jspdf";
 import QRCode from "qrcode";
 import { signMesaTableToken } from "../lib/mesaQrToken";
+import { supabase } from "../supabaseClient";
+
+function normalizeBlockedMesaTables(value, maxTableCount = 500) {
+  if (!Array.isArray(value)) return [];
+  const max = Number.isFinite(maxTableCount) && maxTableCount >= 1 ? Math.floor(maxTableCount) : 500;
+  return [...new Set(value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry >= 1 && entry <= max))]
+    .sort((a, b) => a - b);
+}
 
 /**
  * Gestión de URLs del panel cliente por mesa (para QR). Misma ruta /carta para todos;
@@ -10,7 +18,9 @@ import { signMesaTableToken } from "../lib/mesaQrToken";
 export default function MesaQrLinksPanel({
   restaurantId,
   tableCount,
-  qrModuleEnabled
+  qrModuleEnabled,
+  restaurantMetadata,
+  onRestaurantMetadataChange
 }) {
   const secret = String(import.meta.env.VITE_MESA_QR_SECRET || "").trim();
   const defaultBase =
@@ -22,12 +32,20 @@ export default function MesaQrLinksPanel({
   const [qrPreviewUrl, setQrPreviewUrl] = useState("");
   const [downloadingSingle, setDownloadingSingle] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
+  const [savingBlockedTable, setSavingBlockedTable] = useState(null);
+  const [blockedTablesFlash, setBlockedTablesFlash] = useState("");
 
   const n = useMemo(() => {
     const t = Number(tableCount);
     if (!Number.isFinite(t) || t < 1) return 0;
     return Math.min(500, Math.floor(t));
   }, [tableCount]);
+
+  const blockedTables = useMemo(
+    () => normalizeBlockedMesaTables(restaurantMetadata?.mesa_qr_blocked_tables, n || 500),
+    [restaurantMetadata, n]
+  );
+  const previewTableBlocked = blockedTables.includes(previewTable);
 
   useEffect(() => {
     if (n >= 1 && (previewTable < 1 || previewTable > n)) {
@@ -103,6 +121,39 @@ export default function MesaQrLinksPanel({
     return `${prefix}-${rid}`;
   }
 
+  async function togglePreviewTableBlocked() {
+    if (!restaurantId || !previewTable || savingBlockedTable) return;
+    setSavingBlockedTable(previewTable);
+    setBlockedTablesFlash("");
+    try {
+      const currentMetadata =
+        restaurantMetadata && typeof restaurantMetadata === "object" && !Array.isArray(restaurantMetadata)
+          ? restaurantMetadata
+          : {};
+      const nextBlockedTables = previewTableBlocked
+        ? blockedTables.filter((table) => table !== previewTable)
+        : [...blockedTables, previewTable].sort((a, b) => a - b);
+      const nextMetadata = {
+        ...currentMetadata,
+        mesa_qr_blocked_tables: nextBlockedTables
+      };
+      const { error } = await supabase.from("restaurants").update({ metadata: nextMetadata }).eq("id", restaurantId);
+      if (error) throw error;
+      if (typeof onRestaurantMetadataChange === "function") {
+        onRestaurantMetadataChange(nextMetadata);
+      }
+      setBlockedTablesFlash(
+        previewTableBlocked
+          ? `Mesa ${previewTable} disponible nuevamente para pedidos QR.`
+          : `Mesa ${previewTable} bloqueada para pedidos QR.`
+      );
+    } catch (error) {
+      setBlockedTablesFlash(`No se pudo actualizar la mesa ${previewTable}: ${error?.message || error}`);
+    } finally {
+      setSavingBlockedTable(null);
+    }
+  }
+
   async function downloadSingleQr() {
     const row = rows.find((r) => r.table === previewTable);
     if (!row?.url || downloadingSingle) return;
@@ -135,14 +186,16 @@ export default function MesaQrLinksPanel({
     try {
       const pdf = new jsPDF({ unit: "mm", format: "a4" });
       const pageWidth = pdf.internal.pageSize.getWidth();
-      const marginX = 12;
-      const marginY = 14;
-      const columnGap = 10;
-      const rowGap = 5;
+      const marginX = 10;
+      const marginY = 10;
+      const columnGap = 8;
+      const rowGap = 8;
       const cellWidth = (pageWidth - marginX * 2 - columnGap) / 2;
-      const qrSize = 50;
-      const cellHeight = qrSize + 12;
-      const maxPerPage = 8;
+      const cellHeight = 86;
+      const cardSize = 86;
+      const qrSize = 62;
+      const cardRadius = 4;
+      const maxPerPage = 6;
       let indexOnPage = 0;
 
       pdf.setFont("helvetica", "normal");
@@ -160,10 +213,20 @@ export default function MesaQrLinksPanel({
         const baseX = marginX + col * (cellWidth + columnGap);
         const baseY = marginY + pageRow * (cellHeight + rowGap);
 
-        const qrX = baseX + (cellWidth - qrSize) / 2;
-        pdf.addImage(dataUrl, "PNG", qrX, baseY, qrSize, qrSize);
+        const cardX = baseX + (cellWidth - cardSize) / 2;
+        const cardY = baseY;
+        const qrX = cardX + (cardSize - qrSize) / 2;
+        const qrY = cardY + 8;
+
+        pdf.setDrawColor(148, 163, 184);
+        pdf.setLineWidth(0.5);
+        pdf.roundedRect(cardX, cardY, cardSize, cardSize, cardRadius, cardRadius);
+        pdf.addImage(dataUrl, "PNG", qrX, qrY, qrSize, qrSize);
         pdf.setFont("helvetica", "bold");
-        pdf.text(`Mesa ${row.table}`, baseX + cellWidth / 2, baseY + qrSize + 7, { align: "center" });
+        pdf.setFontSize(12);
+        pdf.text(`Mesa ${row.table}`, cardX + cardSize / 2, cardY + cardSize - 8, {
+          align: "center"
+        });
         indexOnPage += 1;
 
         if (indexOnPage >= maxPerPage) {
@@ -225,6 +288,36 @@ export default function MesaQrLinksPanel({
         </p>
       )}
 
+      <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-3">
+        <p className="text-xs font-medium text-slate-300">Mesas bloqueadas</p>
+        {blockedTables.length ? (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {blockedTables.map((table) => (
+              <span
+                key={table}
+                className="rounded-full border border-rose-500/35 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-200"
+              >
+                Mesa {table}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-slate-500">No hay mesas bloqueadas en este momento.</p>
+        )}
+      </div>
+
+      {blockedTablesFlash ? (
+        <p
+          className={`rounded-lg px-3 py-2 text-xs ${
+            blockedTablesFlash.startsWith("No se pudo")
+              ? "border border-rose-500/35 bg-rose-500/10 text-rose-200"
+              : "border border-emerald-500/30 bg-emerald-950/30 text-emerald-100/95"
+          }`}
+        >
+          {blockedTablesFlash}
+        </p>
+      ) : null}
+
       {!restaurantId || n < 1 ? (
         <p className="text-sm text-slate-500">Definí la cantidad de mesas para generar enlaces y QR.</p>
       ) : (
@@ -243,7 +336,35 @@ export default function MesaQrLinksPanel({
                   </option>
                 ))}
               </select>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs">
+                <span className="text-slate-400">Estado actual:</span>{" "}
+                <span
+                  className={
+                    previewTableBlocked ? "font-semibold text-rose-300" : "font-semibold text-emerald-300"
+                  }
+                >
+                  {previewTableBlocked ? "Bloqueada" : "Disponible"}
+                </span>
+              </div>
               <div className="flex flex-col items-start gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void togglePreviewTableBlocked();
+                  }}
+                  disabled={savingBlockedTable === previewTable}
+                  className={`rounded border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+                    previewTableBlocked
+                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
+                      : "border-rose-500/45 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
+                  }`}
+                >
+                  {savingBlockedTable === previewTable
+                    ? "Guardando..."
+                    : previewTableBlocked
+                      ? "Marcar disponible"
+                      : "Bloquear mesa"}
+                </button>
                 <button
                   type="button"
                   onClick={() => {
