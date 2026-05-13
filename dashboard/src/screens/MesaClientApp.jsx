@@ -50,6 +50,20 @@ function groupMenuByCategory(menuItems) {
   return entries;
 }
 
+function normalizeCategoryMatchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function shouldHideMesaQrCategory(category) {
+  const normalized = normalizeCategoryMatchText(category);
+  if (!normalized) return false;
+  return normalized.includes("calle") || normalized.includes("llevar");
+}
+
 const MESA_QR_TOKEN_REQUIRED = true;
 /** Pedido a cocina puede ir por proxy Vercel → VPS; algo más alto que antes. */
 const API_REQUEST_TIMEOUT_MS = 15000;
@@ -96,23 +110,28 @@ export default function MesaClientApp() {
   const [confirmDialog, setConfirmDialog] = useState(null);
   const confirmResolverRef = useRef(null);
 
+  const visibleMenuItems = useMemo(
+    () => menuItems.filter((item) => !shouldHideMesaQrCategory(item?.category)),
+    [menuItems]
+  );
+
   const menuById = useMemo(() => {
     const m = new Map();
-    for (const it of menuItems) {
+    for (const it of visibleMenuItems) {
       if (it?.id) m.set(it.id, it);
     }
     return m;
-  }, [menuItems]);
+  }, [visibleMenuItems]);
 
   const cartLines = useMemo(() => buildCartLines(cartById, menuById), [cartById, menuById]);
   const totalAmount = useMemo(() => cartTotal(cartById, menuById), [cartById, menuById]);
 
   const menuItemsFiltered = useMemo(() => {
     const raw = String(menuSearchQuery || "").trim().toLowerCase();
-    if (!raw) return menuItems;
+    if (!raw) return visibleMenuItems;
 
     const words = raw.split(/\s+/).filter(Boolean);
-    return menuItems.filter((item) => {
+    return visibleMenuItems.filter((item) => {
       const haystack = [
         item.name,
         item.category,
@@ -124,7 +143,7 @@ export default function MesaClientApp() {
         .toLowerCase();
       return words.every((word) => haystack.includes(word));
     });
-  }, [menuItems, menuSearchQuery]);
+  }, [menuSearchQuery, visibleMenuItems]);
 
   const groupedMenu = useMemo(() => groupMenuByCategory(menuItemsFiltered), [menuItemsFiltered]);
 
@@ -591,7 +610,7 @@ export default function MesaClientApp() {
           </section>
         )}
 
-        {menuItems.length > 0 ? (
+        {visibleMenuItems.length > 0 ? (
           <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
             <label className="block">
               <span className="sr-only">Buscar productos</span>
@@ -606,17 +625,23 @@ export default function MesaClientApp() {
             </label>
             {menuSearchQuery.trim() ? (
               <p className="text-xs text-slate-500">
-                {menuItemsFiltered.length === menuItems.length
-                  ? `${menuItems.length} productos`
-                  : `${menuItemsFiltered.length} de ${menuItems.length} productos`}
+                {menuItemsFiltered.length === visibleMenuItems.length
+                  ? `${visibleMenuItems.length} productos`
+                  : `${menuItemsFiltered.length} de ${visibleMenuItems.length} productos`}
               </p>
             ) : null}
           </section>
         ) : null}
 
-        {menuItems.length > 0 && menuItemsFiltered.length === 0 ? (
+        {visibleMenuItems.length > 0 && menuItemsFiltered.length === 0 ? (
           <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-center text-slate-300">
             No hay productos que coincidan con &quot;{menuSearchQuery.trim()}&quot;.
+          </div>
+        ) : null}
+
+        {menuItems.length > 0 && visibleMenuItems.length === 0 ? (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-center text-slate-300">
+            No hay productos disponibles para mostrar en la carta de mesa.
           </div>
         ) : null}
 
