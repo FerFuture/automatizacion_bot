@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { jsPDF } from "jspdf";
 import QRCode from "qrcode";
 import { signMesaTableToken } from "../lib/mesaQrToken";
 
@@ -19,6 +20,8 @@ export default function MesaQrLinksPanel({
   const [rows, setRows] = useState([]);
   const [previewTable, setPreviewTable] = useState(1);
   const [qrPreviewUrl, setQrPreviewUrl] = useState("");
+  const [downloadingSingle, setDownloadingSingle] = useState(false);
+  const [downloadingAll, setDownloadingAll] = useState(false);
 
   const n = useMemo(() => {
     const t = Number(tableCount);
@@ -66,12 +69,7 @@ export default function MesaQrLinksPanel({
       setQrPreviewUrl("");
       return undefined;
     }
-    QRCode.toDataURL(row.url, {
-      margin: 1,
-      width: 240,
-      errorCorrectionLevel: "M",
-      color: { dark: "#0f172a", light: "#ffffff" }
-    })
+    buildQrDataUrl(row.url, { width: 240 })
       .then((dataUrl) => {
         if (!cancelled) setQrPreviewUrl(dataUrl);
       })
@@ -88,6 +86,94 @@ export default function MesaQrLinksPanel({
       await navigator.clipboard.writeText(text);
     } catch {
       /* ignore */
+    }
+  }
+
+  function buildQrDataUrl(url, { width = 960 } = {}) {
+    return QRCode.toDataURL(url, {
+      margin: 1,
+      width,
+      errorCorrectionLevel: "M",
+      color: { dark: "#0f172a", light: "#ffffff" }
+    });
+  }
+
+  function baseFilename(prefix) {
+    const rid = String(restaurantId || "").trim().slice(0, 8) || "restaurante";
+    return `${prefix}-${rid}`;
+  }
+
+  async function downloadSingleQr() {
+    const row = rows.find((r) => r.table === previewTable);
+    if (!row?.url || downloadingSingle) return;
+    setDownloadingSingle(true);
+    try {
+      const dataUrl = await buildQrDataUrl(row.url);
+      const pdf = new jsPDF({ unit: "mm", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const qrSize = 90;
+      const qrX = (pageWidth - qrSize) / 2;
+      const qrY = 40;
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(18);
+      pdf.text(`Mesa ${row.table}`, pageWidth / 2, 24, { align: "center" });
+      pdf.addImage(dataUrl, "PNG", qrX, qrY, qrSize, qrSize);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(12);
+      pdf.text("Escaneá para abrir la carta de esta mesa", pageWidth / 2, qrY + qrSize + 12, {
+        align: "center"
+      });
+      pdf.save(`${baseFilename(`qr-mesa-${row.table}`)}.pdf`);
+    } finally {
+      setDownloadingSingle(false);
+    }
+  }
+
+  async function downloadAllQrsPdf() {
+    if (!rows.length || downloadingAll) return;
+    setDownloadingAll(true);
+    try {
+      const pdf = new jsPDF({ unit: "mm", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const marginX = 12;
+      const marginY = 14;
+      const columnGap = 10;
+      const rowGap = 5;
+      const cellWidth = (pageWidth - marginX * 2 - columnGap) / 2;
+      const qrSize = 50;
+      const cellHeight = qrSize + 12;
+      const maxPerPage = 8;
+      let indexOnPage = 0;
+
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(11);
+
+      for (let i = 0; i < rows.length; i += 1) {
+        if (i > 0 && indexOnPage === 0) {
+          pdf.addPage();
+        }
+
+        const row = rows[i];
+        const dataUrl = await buildQrDataUrl(row.url);
+        const col = indexOnPage % 2;
+        const pageRow = Math.floor(indexOnPage / 2);
+        const baseX = marginX + col * (cellWidth + columnGap);
+        const baseY = marginY + pageRow * (cellHeight + rowGap);
+
+        const qrX = baseX + (cellWidth - qrSize) / 2;
+        pdf.addImage(dataUrl, "PNG", qrX, baseY, qrSize, qrSize);
+        pdf.setFont("helvetica", "bold");
+        pdf.text(`Mesa ${row.table}`, baseX + cellWidth / 2, baseY + qrSize + 7, { align: "center" });
+        indexOnPage += 1;
+
+        if (indexOnPage >= maxPerPage) {
+          indexOnPage = 0;
+        }
+      }
+
+      pdf.save(`${baseFilename("qrs-mesas")}.pdf`);
+    } finally {
+      setDownloadingAll(false);
     }
   }
 
@@ -157,7 +243,7 @@ export default function MesaQrLinksPanel({
                   </option>
                 ))}
               </select>
-              <div className="flex flex-wrap gap-2 pt-1">
+              <div className="flex flex-col items-start gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => {
@@ -167,6 +253,26 @@ export default function MesaQrLinksPanel({
                   className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
                 >
                   Copiar enlace
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void downloadSingleQr();
+                  }}
+                  disabled={downloadingSingle || !rows.length}
+                  className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {downloadingSingle ? "Generando..." : "Descargar QR"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void downloadAllQrsPdf();
+                  }}
+                  disabled={downloadingAll || !rows.length}
+                  className="rounded border border-emerald-500/50 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
+                >
+                  {downloadingAll ? "Generando PDF..." : "Descargar QRs"}
                 </button>
               </div>
             </div>
@@ -181,7 +287,7 @@ export default function MesaQrLinksPanel({
                 />
               ) : (
                 <div className="flex h-[240px] w-[240px] items-center justify-center rounded-lg border border-dashed border-slate-700 text-xs text-slate-500">
-                  Generando…
+                  Generando...
                 </div>
               )}
               <p className="max-w-[240px] text-center text-[11px] text-slate-500">
