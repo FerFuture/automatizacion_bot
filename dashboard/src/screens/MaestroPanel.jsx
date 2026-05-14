@@ -15,13 +15,15 @@ export default function MaestroPanel({
   cashEnabled,
   mercadoPagoEnabled,
   statsEnabled,
+  stockPanelEnabled,
   tableCount,
   loadingRestaurant,
   onServiceFlagsUpdated,
   onTableCountUpdated,
   onMesaQrModuleToggle,
   onWaiterFulfillmentSelectorToggle,
-  onBotRuntimeSwitchesVisibleToggle
+  onBotRuntimeSwitchesVisibleToggle,
+  onStockPanelToggle
 }) {
   const [savingDelivery, setSavingDelivery] = useState(false);
   const [savingTables, setSavingTables] = useState(false);
@@ -157,6 +159,24 @@ export default function MaestroPanel({
     );
   }
 
+  async function setStockPanelFlag(nextEnabled) {
+    if (savingDelivery || savingTables) return;
+    if (typeof onStockPanelToggle !== "function") {
+      setLocalError("No se pudo actualizar Gestor de stock.");
+      return;
+    }
+    setLocalError("");
+    setLocalOk("");
+    setSavingDelivery(true);
+    const result = await onStockPanelToggle(Boolean(nextEnabled));
+    setSavingDelivery(false);
+    if (!result?.ok) {
+      setLocalError("No se pudo guardar Gestor de stock.");
+      return;
+    }
+    setLocalOk(nextEnabled ? "Gestor de stock visible en el dashboard." : "Gestor de stock oculto en el dashboard.");
+  }
+
   async function copyRestartCommand() {
     try {
       await navigator.clipboard.writeText(restartCommand);
@@ -193,6 +213,9 @@ export default function MaestroPanel({
           </li>
           <li>
             <strong>Carta y QR mesas:</strong> controla la pestaña específica del dashboard para gestión de QR por mesa.
+          </li>
+          <li>
+            <strong>Gestor de stock:</strong> muestra/oculta la pestaña para administrar inventario y recetario.
           </li>
           <li>
             <strong>Modalidad del mozo:</strong> muestra/oculta el selector Mesa/Delivery en el panel del mozo.
@@ -571,6 +594,48 @@ export default function MaestroPanel({
                 />
               </button>
               <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${mesaQrEnabled ? "text-emerald-300" : "text-slate-500"}`}>
+                On
+              </span>
+            </div>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-slate-200">Gestor de stock (Dashboard)</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {stockPanelEnabled
+                  ? "ON · Se muestra la pestaña de Gestor de stock en el dashboard."
+                  : "OFF · Se oculta la pestaña de Gestor de stock en el dashboard."}
+              </p>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-3 sm:gap-4">
+              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${stockPanelEnabled ? "text-slate-500" : "text-rose-300"}`}>
+                Off
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={stockPanelEnabled}
+                aria-label={stockPanelEnabled ? "Gestor de stock activado. Pulsa para desactivar." : "Gestor de stock desactivado. Pulsa para activar."}
+                disabled={busy}
+                onClick={() => setStockPanelFlag(!stockPanelEnabled)}
+                className={[
+                  "relative h-10 w-[4.5rem] shrink-0 rounded-full border border-slate-600/80 transition-colors duration-200",
+                  stockPanelEnabled ? "bg-emerald-600" : "bg-slate-700",
+                  busy ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                  "focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+                ].join(" ")}
+              >
+                <span
+                  aria-hidden
+                  className={[
+                    "absolute top-1 left-1 block h-8 w-8 rounded-full bg-white shadow-md ring-1 ring-black/10 transition-transform duration-200 ease-out",
+                    stockPanelEnabled ? "translate-x-8" : "translate-x-0"
+                  ].join(" ")}
+                />
+              </button>
+              <span className={`w-9 text-center text-xs font-bold uppercase tracking-wide ${stockPanelEnabled ? "text-emerald-300" : "text-slate-500"}`}>
                 On
               </span>
             </div>

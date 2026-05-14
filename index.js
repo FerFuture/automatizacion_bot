@@ -27,6 +27,7 @@ const {
   generateAssistantResponse,
   generateOrderQuote,
   detectAddressIntent,
+  parseRecipeFromText,
   resolvePublicBrandName,
   resolveBotDisplayName
 } = require("./ia_service");
@@ -79,6 +80,7 @@ const MESA_API_PORT = Number(process.env.MESA_API_PORT || 3000);
 const MESA_ORDER_PATH = "/api/mesa/order";
 const DASHBOARD_PASSWORD_VERIFY_PATH = "/api/dashboard/password/verify";
 const DASHBOARD_PASSWORD_HASH_PATH = "/api/dashboard/password/hash";
+const DASHBOARD_STOCK_RECIPE_AI_PATH = "/api/dashboard/stock/recipe-ai";
 /** Misma cadena que `VITE_MESA_QR_SECRET` en el dashboard: si está definida, exige `mesaToken` en POST /api/mesa/order */
 const MESA_QR_SECRET = String(process.env.MESA_QR_SECRET || "").trim();
 
@@ -147,7 +149,8 @@ const mesaApiServer = http.createServer(async (req, res) => {
     if (
       pathName !== MESA_ORDER_PATH &&
       pathName !== DASHBOARD_PASSWORD_VERIFY_PATH &&
-      pathName !== DASHBOARD_PASSWORD_HASH_PATH
+      pathName !== DASHBOARD_PASSWORD_HASH_PATH &&
+      pathName !== DASHBOARD_STOCK_RECIPE_AI_PATH
     ) {
       return sendJson(res, 404, { error: "Not found" });
     }
@@ -178,6 +181,17 @@ const mesaApiServer = http.createServer(async (req, res) => {
         return sendJson(res, 500, { error: "No se pudo generar hash" });
       }
       return sendJson(res, 200, { passwordHash });
+    }
+
+    if (pathName === DASHBOARD_STOCK_RECIPE_AI_PATH) {
+      const text = String(body.text || "").trim();
+      if (!text) return sendJson(res, 400, { error: "Falta text" });
+      try {
+        const recipe = await parseRecipeFromText(text);
+        return sendJson(res, 200, { recipe });
+      } catch (error) {
+        return sendJson(res, 500, { error: error?.message || "No se pudo analizar la receta" });
+      }
     }
 
     const restaurantId = body.restaurantId;

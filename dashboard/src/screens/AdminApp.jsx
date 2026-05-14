@@ -31,6 +31,7 @@ import AdminStats from "./AdminStats";
 import DashboardUsersPanel from "./DashboardUsersPanel";
 import MaestroPanel from "./MaestroPanel";
 import MesaQrLinksPanel from "../components/MesaQrLinksPanel";
+import StockManagerPanel from "../components/StockManagerPanel";
 import OrdersDateRangeCalendar from "../components/OrdersDateRangeCalendar";
 import { fetchRestaurantForDashboard } from "../lib/restaurantTenant";
 import { getSession } from "../lib/auth";
@@ -365,7 +366,7 @@ export default function AdminApp({ onLogout }) {
 
   useEffect(() => {
     if (!isEncargado) return;
-    const hidden = new Set(["settings", "users", "stats", "mesaqr", "maestro"]);
+    const hidden = new Set(["settings", "users", "stats", "mesaqr", "stock", "maestro"]);
     if (hidden.has(activeTab)) setActiveTab("orders");
   }, [isEncargado, activeTab]);
   const [orders, setOrders] = useState([]);
@@ -441,6 +442,7 @@ export default function AdminApp({ onLogout }) {
   const [cashEnabled, setCashEnabled] = useState(true);
   const [mercadoPagoEnabled, setMercadoPagoEnabled] = useState(true);
   const [statsEnabled, setStatsEnabled] = useState(true);
+  const [stockPanelEnabled, setStockPanelEnabled] = useState(true);
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [configFlash, setConfigFlash] = useState("");
@@ -455,6 +457,10 @@ export default function AdminApp({ onLogout }) {
   useEffect(() => {
     if (activeTab === "mesaqr" && !mesaQrEnabled) setActiveTab("orders");
   }, [activeTab, mesaQrEnabled]);
+
+  useEffect(() => {
+    if (activeTab === "stock" && !stockPanelEnabled) setActiveTab("orders");
+  }, [activeTab, stockPanelEnabled]);
 
   function requestConfirm({
     title = "Confirmar acción",
@@ -755,6 +761,7 @@ export default function AdminApp({ onLogout }) {
     setCashEnabled(data.cash_enabled !== false);
     setMercadoPagoEnabled(data.mercadopago_enabled !== false);
     setStatsEnabled(data.stats_enabled !== false);
+    setStockPanelEnabled(metadataObj.stock_panel_enabled !== false);
     setLoadingConfig(false);
   }
 
@@ -962,6 +969,29 @@ export default function AdminApp({ onLogout }) {
     }
     setRestaurantMetadata(nextMetadata);
     setBotRuntimeSwitchesVisible(Boolean(nextEnabled));
+    return { ok: true };
+  }
+
+  async function setStockPanelEnabledFlag(nextEnabled) {
+    if (!restaurantId) {
+      setError("No hay restaurante cargado.");
+      return { ok: false };
+    }
+    setError("");
+    const nextMetadata = {
+      ...(restaurantMetadata && typeof restaurantMetadata === "object" ? restaurantMetadata : {}),
+      stock_panel_enabled: Boolean(nextEnabled)
+    };
+    const { error: updateError } = await supabase
+      .from("restaurants")
+      .update({ metadata: nextMetadata })
+      .eq("id", restaurantId);
+    if (updateError) {
+      setError(`No se pudo guardar Gestor de stock: ${updateError.message}`);
+      return { ok: false, error: updateError };
+    }
+    setRestaurantMetadata(nextMetadata);
+    setStockPanelEnabled(Boolean(nextEnabled));
     return { ok: true };
   }
 
@@ -1898,6 +1928,19 @@ export default function AdminApp({ onLogout }) {
               }`}
             >
               Carta y QR Mesas
+            </button>
+          ) : null}
+          {canAccessFullAdminPanel && stockPanelEnabled ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("stock")}
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "stock"
+                  ? "bg-emerald-500 text-slate-950"
+                  : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              Gestor de stock
             </button>
           ) : null}
           {canAccessFullAdminPanel && statsEnabled ? (
@@ -2915,6 +2958,8 @@ export default function AdminApp({ onLogout }) {
               )}
             />
           </section>
+        ) : activeTab === "stock" && stockPanelEnabled ? (
+          <StockManagerPanel restaurantId={restaurantId} />
         ) : activeTab === "stats" && statsEnabled ? (
           <AdminStats restaurantId={restaurantId} />
         ) : activeTab === "users" ? (
@@ -2931,6 +2976,7 @@ export default function AdminApp({ onLogout }) {
             cashEnabled={cashEnabled}
             mercadoPagoEnabled={mercadoPagoEnabled}
             statsEnabled={statsEnabled}
+            stockPanelEnabled={stockPanelEnabled}
             tableCount={Math.min(
               500,
               Math.max(1, parseInt(String(restaurantConfig.table_count || "12").trim(), 10) || 12)
@@ -2941,6 +2987,7 @@ export default function AdminApp({ onLogout }) {
             onMesaQrModuleToggle={setMesaQrModuleEnabled}
             onWaiterFulfillmentSelectorToggle={setWaiterFulfillmentSelectorFlag}
             onBotRuntimeSwitchesVisibleToggle={setBotRuntimeSwitchesVisibleFlag}
+            onStockPanelToggle={setStockPanelEnabledFlag}
           />
         ) : (
           <section className="space-y-4">

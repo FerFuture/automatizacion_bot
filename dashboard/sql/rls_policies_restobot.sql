@@ -86,6 +86,39 @@ drop policy if exists "restobot_orders_auth_update" on public.orders;
 create policy "restobot_orders_auth_update"
   on public.orders for update to authenticated using (true) with check (true);
 
+-- ---------- stock_items ----------
+alter table public.stock_items enable row level security;
+
+drop policy if exists "restobot_stock_items_anon_all" on public.stock_items;
+create policy "restobot_stock_items_anon_all"
+  on public.stock_items for all to anon using (true) with check (true);
+
+drop policy if exists "restobot_stock_items_auth_all" on public.stock_items;
+create policy "restobot_stock_items_auth_all"
+  on public.stock_items for all to authenticated using (true) with check (true);
+
+-- ---------- stock_recipes ----------
+alter table public.stock_recipes enable row level security;
+
+drop policy if exists "restobot_stock_recipes_anon_all" on public.stock_recipes;
+create policy "restobot_stock_recipes_anon_all"
+  on public.stock_recipes for all to anon using (true) with check (true);
+
+drop policy if exists "restobot_stock_recipes_auth_all" on public.stock_recipes;
+create policy "restobot_stock_recipes_auth_all"
+  on public.stock_recipes for all to authenticated using (true) with check (true);
+
+-- ---------- stock_recipe_ingredients ----------
+alter table public.stock_recipe_ingredients enable row level security;
+
+drop policy if exists "restobot_stock_recipe_ingredients_anon_all" on public.stock_recipe_ingredients;
+create policy "restobot_stock_recipe_ingredients_anon_all"
+  on public.stock_recipe_ingredients for all to anon using (true) with check (true);
+
+drop policy if exists "restobot_stock_recipe_ingredients_auth_all" on public.stock_recipe_ingredients;
+create policy "restobot_stock_recipe_ingredients_auth_all"
+  on public.stock_recipe_ingredients for all to authenticated using (true) with check (true);
+
 -- =============================================================================
 -- Verificación (solo lectura; seguro re-ejecutar)
 -- =============================================================================
@@ -99,7 +132,7 @@ select
   cmd as operation
 from pg_policies
 where schemaname = 'public'
-  and tablename in ('orders', 'menu_items', 'restaurants', 'bot_interactions')
+  and tablename in ('orders', 'menu_items', 'restaurants', 'bot_interactions', 'stock_items', 'stock_recipes', 'stock_recipe_ingredients')
   and policyname like 'restobot_%'
 order by tablename, policyname;
 
@@ -112,5 +145,5 @@ from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public'
   and c.relkind = 'r'
-  and c.relname in ('orders', 'menu_items', 'restaurants', 'bot_interactions')
+  and c.relname in ('orders', 'menu_items', 'restaurants', 'bot_interactions', 'stock_items', 'stock_recipes', 'stock_recipe_ingredients')
 order by c.relname;

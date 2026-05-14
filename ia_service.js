@@ -579,6 +579,288 @@ async function detectAddressIntent({ customerMessage, chatHistory = [] }) {
   return result;
 }
 
+function normalizeRecipeIngredientUnit(value) {
+  const rawUnit = String(value || "UNIDAD").toLocaleUpperCase("es-AR").trim();
+  if (["KG", "KILO", "KILOS", "KILOGRAMO", "KILOGRAMOS"].includes(rawUnit)) return "KG";
+  if (["G", "GR", "GRS", "GRAMO", "GRAMOS"].includes(rawUnit)) return "G";
+  if (["L", "LT", "LITRO", "LITROS"].includes(rawUnit)) return "L";
+  if (["ML", "MILILITRO", "MILILITROS"].includes(rawUnit)) return "ML";
+  if (["PAQUETE", "PAQUETES", "PACK"].includes(rawUnit)) return "PAQUETE";
+  if (["UNIDAD", "UNIDADES", "U"].includes(rawUnit)) return "UNIDAD";
+  return "UNIDAD";
+}
+
+function stripDiacritics(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function parseRecipeQuantityToken(primary, secondary) {
+  const first = Number(String(primary || "").replace(",", "."));
+  const second = Number(String(secondary || "").replace(",", "."));
+  if (Number.isFinite(second) && second > 0) return Math.round(second * 1000) / 1000;
+  if (Number.isFinite(first) && first > 0) return Math.round(first * 1000) / 1000;
+  return 1;
+}
+
+function normalizeIngredientNameForCompare(value) {
+  return stripDiacritics(String(value || ""))
+    .toLocaleUpperCase("es-AR")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function ingredientNamesLookEquivalent(a, b) {
+  const left = normalizeIngredientNameForCompare(a);
+  const right = normalizeIngredientNameForCompare(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.includes(right) || right.includes(left)) return true;
+
+  const leftTokens = left.split(" ").filter(Boolean);
+  const rightTokens = right.split(" ").filter(Boolean);
+  const commonCount = leftTokens.filter((token) => rightTokens.includes(token)).length;
+  return commonCount > 0 && (commonCount === leftTokens.length || commonCount === rightTokens.length);
+}
+
+function ingredientNameIsContainedInOther(needle, haystack) {
+  const needleTokens = normalizeIngredientNameForCompare(needle).split(" ").filter(Boolean);
+  const haystackTokens = normalizeIngredientNameForCompare(haystack).split(" ").filter(Boolean);
+  if (!needleTokens.length || !haystackTokens.length) return false;
+  if (needleTokens.join(" ") === haystackTokens.join(" ")) return false;
+  return needleTokens.every((token) => haystackTokens.includes(token));
+}
+
+function isIngredientMentionedVaguely(name, rawText) {
+  const normalizedName = normalizeIngredientNameForCompare(name);
+  if (!normalizedName) return false;
+
+  const lines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.some((line) => {
+    if (/\d/.test(line)) return false;
+    const normalizedLine = normalizeIngredientNameForCompare(line);
+    if (!normalizedLine) return false;
+
+    const vagueLine =
+      normalizedLine.includes("A GUSTO") ||
+      normalizedLine.includes("CANTIDAD NECESARIA") ||
+      normalizedLine.includes("C N") ||
+      normalizedLine.includes("SAL Y PIMIENTA") ||
+      normalizedLine.includes("PIMIENTA Y SAL");
+
+    if (!vagueLine) return false;
+
+    const nameTokens = normalizedName.split(" ").filter(Boolean);
+    return nameTokens.every((token) => normalizedLine.includes(token));
+  });
+}
+
+function shouldIgnoreAiIngredient(ingredient, rawText, heuristicIngredients = []) {
+  const quantity = Number(ingredient?.quantity || 0);
+  const unit = normalizeRecipeIngredientUnit(ingredient?.unit);
+  const ingredientName = String(ingredient?.ingredient_name || "");
+
+  if (unit === "UNIDAD" && Math.abs(quantity - 1) < 0.001) {
+    if (isIngredientMentionedVaguely(ingredientName, rawText)) {
+      return true;
+    }
+
+    const containedInHeuristic = heuristicIngredients.some((candidate) =>
+      ingredientNameIsContainedInOther(ingredientName, candidate.ingredient_name)
+    );
+    if (containedInHeuristic) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function normalizeRecipeYieldLabel(value) {
+  return stripDiacritics(String(value || ""))
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleUpperCase("es-AR");
+}
+
+function extractRecipeYieldLabel(text) {
+  const raw = String(text || "");
+  if (!raw) return "";
+
+  const normalizedRaw = stripDiacritics(raw);
+  const patterns = [
+    /ingredientes\s*\(([^)]+\d[^)]*)\)/i,
+    /para\s+(\d+(?:\s*-\s*\d+)?)\s+(personas?|porciones?|platos?|unidades?|empanadas?|tortitas?|bollitos?|piezas?)/i,
+    /rinde[n]?\s+(\d+(?:\s*-\s*\d+)?)\s+(personas?|porciones?|platos?|unidades?|empanadas?|tortitas?|bollitos?|piezas?)/i,
+    /salen?\s+(\d+(?:\s*-\s*\d+)?)\s+(personas?|porciones?|platos?|unidades?|empanadas?|tortitas?|bollitos?|piezas?)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalizedRaw.match(pattern);
+    if (!match) continue;
+    const label = match[1] && match[2] ? `${match[1]} ${match[2]}` : match[1];
+    const normalizedLabel = normalizeRecipeYieldLabel(label);
+    if (normalizedLabel) return normalizedLabel;
+  }
+
+  return "";
+}
+
+function appendYieldLabelToRecipeName(name, yieldLabel) {
+  const baseName = stripDiacritics(String(name || "").trim());
+  const normalizedYield = normalizeRecipeYieldLabel(yieldLabel);
+  if (!baseName || !normalizedYield) return baseName || "";
+  if (normalizeRecipeYieldLabel(baseName).includes(normalizedYield)) return baseName;
+  return `${baseName} (${normalizedYield})`;
+}
+
+function extractRecipeHeuristically(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { name: "", preparation: "", ingredients: [] };
+
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const name = stripDiacritics(lines[0] || "");
+  const quantityFirstRegex =
+    /^[\-*•]?\s*(\d+(?:[.,]\d+)?)\s*(kg|kilos?|kilogramos?|g|gr|grs|gramos?|l|lt|litros?|ml|mililitros?|unidad(?:es)?|u|paquete(?:s)?|pack)\b[\s:,-]*(.+)$/i;
+  const ingredientFirstRegex =
+    /^[\-*•]?\s*([^:]+?)\s*:\s*(\d+(?:[.,]\d+)?)(?:\s*[–-]\s*(\d+(?:[.,]\d+)?))?\s*(kg|kilos?|kilogramos?|g|gr|grs|gramos?|l|lt|litros?|ml|mililitros?|unidad(?:es)?|u|paquete(?:s)?|pack)\b/i;
+
+  const ingredients = [];
+  const preparationLines = [];
+
+  for (const line of lines.slice(1)) {
+    const ingredientFirstMatch = line.match(ingredientFirstRegex);
+    if (ingredientFirstMatch) {
+      const ingredientName = stripDiacritics(String(ingredientFirstMatch[1] || ""))
+        .toLocaleUpperCase("es-AR")
+        .trim();
+      if (ingredientName) {
+        ingredients.push({
+          ingredient_name: ingredientName,
+          quantity: parseRecipeQuantityToken(ingredientFirstMatch[2], ingredientFirstMatch[3]),
+          unit: normalizeRecipeIngredientUnit(ingredientFirstMatch[4])
+        });
+        continue;
+      }
+    }
+
+    const quantityFirstMatch = line.match(quantityFirstRegex);
+    if (quantityFirstMatch) {
+      const ingredientName = stripDiacritics(String(quantityFirstMatch[3] || "")).toLocaleUpperCase("es-AR").trim();
+      if (ingredientName) {
+        ingredients.push({
+          ingredient_name: ingredientName,
+          quantity: parseRecipeQuantityToken(quantityFirstMatch[1]),
+          unit: normalizeRecipeIngredientUnit(quantityFirstMatch[2])
+        });
+        continue;
+      }
+    }
+    preparationLines.push(line);
+  }
+
+  return {
+    name,
+    preparation: preparationLines.join("\n").trim(),
+    ingredients
+  };
+}
+
+async function parseRecipeFromText(text) {
+  const rawText = String(text || "").trim();
+  if (!rawText) {
+    return { name: "", preparation: "", ingredients: [] };
+  }
+
+  const heuristic = extractRecipeHeuristically(rawText);
+  const yieldLabel = extractRecipeYieldLabel(rawText);
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+    max_tokens: 900,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Converti el texto del usuario en JSON con esta forma exacta: " +
+          '{"name":"string","preparation":"string","ingredients":[{"ingredient_name":"string","quantity":number,"unit":"KG|G|L|ML|UNIDAD|PAQUETE"}]}. ' +
+          "Reglas: ingredient_name siempre en MAYUSCULAS. quantity debe ser numero positivo. unit solo puede ser KG, G, L, ML, UNIDAD o PAQUETE. " +
+          "Si aparece gramos/gr/grs usa G. Si aparece mililitros/ml usa ML. Si aparece litro/litros usa L. " +
+          "MUY IMPORTANTE: conserva la unidad original del texto. No conviertas 180 G a 0.18 KG. No conviertas 550 ML a 0.55 L. " +
+          "Si no hay cantidad clara, usa 1. Si no hay unidad clara, usa UNIDAD. No inventes ingredientes que no aparezcan en el texto. " +
+          "Si el nombre de la receta no esta claro, propon uno breve y razonable."
+      },
+      { role: "user", content: rawText }
+    ]
+  });
+
+  logUsage("parseRecipeFromText", completion.usage);
+  const parsed = safeParseJson((completion.choices?.[0]?.message?.content || "").trim()) || {};
+  const ingredients = Array.isArray(parsed.ingredients)
+    ? parsed.ingredients
+        .map((ingredient) => {
+          const ingredientName = stripDiacritics(String(ingredient?.ingredient_name || ""))
+            .toLocaleUpperCase("es-AR")
+            .trim();
+          const quantity = Number(ingredient?.quantity);
+          const unit = normalizeRecipeIngredientUnit(ingredient?.unit);
+          if (!ingredientName) return null;
+          return {
+            ingredient_name: ingredientName,
+            quantity: Number.isFinite(quantity) && quantity > 0 ? Math.round(quantity * 1000) / 1000 : 1,
+            unit
+          };
+        })
+        .filter(Boolean)
+    : [];
+
+  const aiIngredients = ingredients.filter((ingredient) => !shouldIgnoreAiIngredient(ingredient, rawText, heuristic.ingredients));
+  const heuristicIngredientsByName = new Map(heuristic.ingredients.map((ingredient) => [ingredient.ingredient_name, ingredient]));
+  const mergedIngredients = [];
+  const seen = new Set();
+
+  for (const ingredient of aiIngredients) {
+    const heuristicIngredient =
+      heuristicIngredientsByName.get(ingredient.ingredient_name) ||
+      heuristic.ingredients.find(
+        (candidate) =>
+          candidate.unit === ingredient.unit &&
+          Math.abs(Number(candidate.quantity) - Number(ingredient.quantity)) < 0.001 &&
+          ingredientNamesLookEquivalent(candidate.ingredient_name, ingredient.ingredient_name)
+      );
+    const chosen = heuristicIngredient || ingredient;
+    mergedIngredients.push(chosen);
+    seen.add(chosen.ingredient_name);
+    if (heuristicIngredient) seen.add(ingredient.ingredient_name);
+  }
+
+  for (const ingredient of heuristic.ingredients) {
+    if (!seen.has(ingredient.ingredient_name)) {
+      mergedIngredients.push(ingredient);
+      seen.add(ingredient.ingredient_name);
+    }
+  }
+
+  return {
+    name: appendYieldLabelToRecipeName(stripDiacritics(String(parsed.name || "").trim()) || heuristic.name, yieldLabel),
+    preparation: String(parsed.preparation || "").trim() || heuristic.preparation || rawText,
+    ingredients: mergedIngredients.length ? mergedIngredients : heuristic.ingredients
+  };
+}
+
 module.exports = {
   MAX_AUDIO_SECONDS,
   transcribeAudioWithWhisper,
@@ -586,6 +868,7 @@ module.exports = {
   generateAssistantResponse,
   generateOrderQuote,
   detectAddressIntent,
+  parseRecipeFromText,
   invalidateContextCache,
   resolvePublicBrandName,
   resolveBotDisplayName
