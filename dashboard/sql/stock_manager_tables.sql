@@ -60,6 +60,10 @@ set unit = case
   else upper(unit)
 end;
 
+update public.stock_items
+set name = translate(name, 'ÁÉÍÓÚáéíóú', 'AEIOUAEIOU')
+where name <> translate(name, 'ÁÉÍÓÚáéíóú', 'AEIOUAEIOU');
+
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on table public.stock_items to anon, authenticated;
 grant select, insert, update, delete on table public.stock_recipes to anon, authenticated;
