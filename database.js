@@ -33,6 +33,16 @@ function sanitizeWhatsAppId(raw) {
   return (raw || "").toString().replace(/[^0-9]/g, "");
 }
 
+/** Pago confirmado al crear/actualizar pedido (estadísticas y KPIs). */
+function resolveInitialPaymentFields(explicitStatus) {
+  const raw = String(explicitStatus ?? "").trim().toLowerCase();
+  if (raw === "cancelled") {
+    return { payment_status: "cancelled", payment_paid_at: null };
+  }
+  const now = new Date().toISOString();
+  return { payment_status: "paid", payment_paid_at: now };
+}
+
 function getPossibleIncomingNumbers(rawNumber) {
   const normalized = sanitizeWhatsAppId(rawNumber);
   if (!normalized) return [];
@@ -177,7 +187,7 @@ async function saveOrder(payload) {
     notes: payload.notes || null,
     status: payload.status || "confirmed",
     payment_method: payload.paymentMethod || null,
-    payment_status: payload.paymentStatus || null,
+    ...resolveInitialPaymentFields(payload.paymentStatus),
     total_price: totalProducts,
     total_amount: totalProducts,
     raw_request: payload.rawRequest || null,
@@ -336,6 +346,7 @@ async function getOrderAwaitingCustomerTotalConfirm({ restaurantId, customerNumb
 module.exports = {
   supabase,
   TABLES,
+  resolveInitialPaymentFields,
   getRestaurantByIncomingNumber,
   getRestaurantContext,
   getAvailableMenuItems,

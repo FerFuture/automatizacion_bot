@@ -3,6 +3,7 @@ const {
   saveInteraction,
   updateOrderMatching,
   getRestaurantNameById,
+  resolveInitialPaymentFields,
   supabase,
   TABLES
 } = require("./database");
@@ -236,7 +237,7 @@ async function processDeliveryFeeReadyOrder(orderRow, whatsappClient) {
             status: "awaiting_delivery_total_confirm",
             payment_method: "efectivo",
             payment_link: null,
-            payment_status: "pending"
+            ...resolveInitialPaymentFields()
           },
           { expectStatus: "delivery_fee_set", requireCustomerNotifiedNull: true }
         );
@@ -270,8 +271,8 @@ async function processDeliveryFeeReadyOrder(orderRow, whatsappClient) {
       patch = {
         customer_notified_at: new Date().toISOString(),
         status: "confirmed",
-        payment_status: "pending",
-        payment_link: paymentUrl
+        payment_link: paymentUrl,
+        ...resolveInitialPaymentFields()
       };
     } else {
       body = buildCashTotalProposalMessage(ticketBlock);
@@ -279,7 +280,7 @@ async function processDeliveryFeeReadyOrder(orderRow, whatsappClient) {
       patch = {
         customer_notified_at: new Date().toISOString(),
         status: "awaiting_delivery_total_confirm",
-        payment_status: "pending"
+        ...resolveInitialPaymentFields()
       };
     }
 

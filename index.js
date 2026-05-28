@@ -264,7 +264,6 @@ const mesaApiServer = http.createServer(async (req, res) => {
 
     const botNumber = String(restaurant.whatsapp_number || "").replace(/\D/g, "") || "0";
     const paymentMethod = wantsCash ? "efectivo_mesa" : "mercadopago";
-    const paymentStatus = "pending";
     const nowIso = new Date().toISOString();
 
     const order = await saveOrder({
@@ -276,7 +275,6 @@ const mesaApiServer = http.createServer(async (req, res) => {
       notes: `Mesa: ${tableNumber}`,
       status: "confirmed",
       paymentMethod,
-      paymentStatus,
       fulfillmentType: "mesa",
       tableNumber,
       totalAmount,
@@ -1320,7 +1318,8 @@ async function handleCustomerDeliveryTotalConfirmation({
     order.id,
     {
       status: "confirmed",
-      payment_status: "pending",
+      payment_status: "paid",
+      payment_paid_at: confirmedAt,
       notes: refreshedNotes,
       delivery_total_confirmed_at: confirmedAt
     },
@@ -3462,7 +3461,6 @@ async function handleTextMessage(message, restaurantContext, tenant, customerNum
           }),
           status: "confirmed",
           paymentMethod: "efectivo",
-          paymentStatus: "pending",
           fulfillmentType: ftOrder,
           tableNumber: tableNum != null && tableNum !== "" ? tableNum : undefined
         });
@@ -3508,7 +3506,6 @@ async function handleTextMessage(message, restaurantContext, tenant, customerNum
         }),
         status: "confirmed",
         paymentMethod: "mercadopago",
-        paymentStatus: "pending",
         fulfillmentType: ftOrder,
         tableNumber: tableNum != null && tableNum !== "" ? tableNum : undefined
       });
@@ -3593,7 +3590,6 @@ async function handleTextMessage(message, restaurantContext, tenant, customerNum
         }),
         status: "awaiting_delivery_fee",
         paymentMethod: "efectivo",
-        paymentStatus: "pending",
         fulfillmentType: "delivery",
         subtotalAmount: session.totalAmount,
         deliveryFee: null,
@@ -3648,7 +3644,6 @@ async function handleTextMessage(message, restaurantContext, tenant, customerNum
         }),
         status: "awaiting_delivery_fee",
         paymentMethod: "mercadopago",
-        paymentStatus: "pending",
         fulfillmentType: "delivery",
         subtotalAmount: session.totalAmount,
         deliveryFee: null,
