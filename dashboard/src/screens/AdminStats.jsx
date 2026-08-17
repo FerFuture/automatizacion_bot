@@ -1,18 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-
-function useIsNarrowViewport() {
-  const [narrow, setNarrow] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 639px)");
-    const onChange = () => setNarrow(mq.matches);
-    onChange();
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return narrow;
-}
 import { supabase } from "../supabaseClient";
 import {
   currency,
@@ -34,6 +20,28 @@ import {
   statsFetchWindowDays,
   topProductsChartSubtitle
 } from "../lib/statsConfig";
+import {
+  computeSellerRecap,
+  dayBoundsIso,
+  localDayKey,
+  recapCsvRows,
+  sellingDayKeys,
+  weekdayShortLabel
+} from "../lib/statsSellerRecap";
+
+function useIsNarrowViewport() {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const onChange = () => setNarrow(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return narrow;
+}
 
 function startOfDay(date = new Date()) {
   const d = new Date(date);
@@ -107,6 +115,10 @@ export default function AdminStats({
   const [topDraft, setTopDraft] = useState(() => configToTopDraft(statsConfig));
   const [salesConfigMessage, setSalesConfigMessage] = useState("");
   const [topConfigMessage, setTopConfigMessage] = useState("");
+  const [recapMode, setRecapMode] = useState("day");
+  const [recapDayKey, setRecapDayKey] = useState(() => localDayKey(new Date()));
+  const [recapDayOrders, setRecapDayOrders] = useState([]);
+  const [recapDayLoading, setRecapDayLoading] = useState(false);
 
   const fetchDays = statsFetchWindowDays(statsConfig);
 
@@ -161,6 +173,39 @@ export default function AdminStats({
   }, [restaurantId, reloadTick, fetchDays]);
 
   const stats = useMemo(() => computeStats(orders, statsConfig), [orders, statsConfig]);
+  const salesWindow = useMemo(() => resolveSalesWindow(statsConfig), [statsConfig]);
+  const recapSellingDays = useMemo(() => sellingDayKeys(orders).slice(0, 14), [orders]);
+
+  useEffect(() => {
+    if (!restaurantId || recapMode !== "day") return;
+    const bounds = dayBoundsIso(recapDayKey);
+    if (!bounds) return;
+    let active = true;
+    setRecapDayLoading(true);
+    supabase
+      .from("orders")
+      .select("*")
+      .eq("restaurant_id", restaurantId)
+      .gte("created_at", bounds.fromIso)
+      .lte("created_at", bounds.toIso)
+      .order("created_at", { ascending: false })
+      .limit(2000)
+      .then(({ data, error: queryError }) => {
+        if (!active) return;
+        setRecapDayOrders(queryError ? [] : data || []);
+        setRecapDayLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [restaurantId, recapDayKey, recapMode, reloadTick]);
+
+  const sellerRecap = useMemo(() => {
+    if (recapMode === "period") {
+      return computeSellerRecap(orders, (createdAt) => salesWindow.matches(createdAt));
+    }
+    return computeSellerRecap(recapDayOrders, (createdAt) => localDayKey(createdAt) === recapDayKey);
+  }, [recapMode, orders, recapDayOrders, recapDayKey, salesWindow]);
 
   async function applySalesConfig(overrideDraft) {
     if (!metricsConfigurable || typeof onSaveStatsConfig !== "function") return;
@@ -261,6 +306,18 @@ export default function AdminStats({
       </div>
 
       <KpiGrid today={stats.today} />
+
+      <SellerDayRecap
+        recap={sellerRecap}
+        recapMode={recapMode}
+        onRecapModeChange={setRecapMode}
+        recapDayKey={recapDayKey}
+        onRecapDayKeyChange={setRecapDayKey}
+        sellingDays={recapSellingDays}
+        periodLabel={salesTitle}
+        loading={recapMode === "day" && recapDayLoading}
+        showCsvDownload
+      />
 
       <div className="grid w-full min-w-0 max-w-full grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="min-w-0 max-w-full space-y-3">
@@ -801,6 +858,176 @@ function PaymentMethodsTable({ methods, windowDays }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function topDishPhrase(dish) {
+  if (!dish) return "Aún no hay un plato destacado.";
+  return `${dish.name} · ${dish.qty} u. · ${currency(dish.revenue)}`;
+}
+
+function SellerDayRecap({
+  recap,
+  recapMode,
+  onRecapModeChange,
+  recapDayKey,
+  onRecapDayKeyChange,
+  sellingDays,
+  periodLabel,
+  loading,
+  showCsvDownload
+}) {
+  const subtitle =
+    recapMode === "period"
+      ? periodLabel
+      : `Ventas cobradas del ${isoDateLabel(recapDayKey)}`;
+
+  function handleDownloadCsv() {
+    const stamp = recapMode === "period" ? "periodo" : recapDayKey;
+    downloadCsv(
+      `recuento-vendedores-${stamp}.csv`,
+      ["vendedor", "plato", "unidades", "recaudado_plato", "pedidos_vendedor", "total_vendedor", "mas_vendido_vendedor"],
+      recapCsvRows(recap)
+    );
+  }
+
+  const modeBtn = (mode, label) => (
+    <button
+      type="button"
+      onClick={() => onRecapModeChange(mode)}
+      className={[
+        "rounded-md px-2.5 py-1 text-[11px] font-medium",
+        recapMode === mode
+          ? "bg-emerald-600 text-white"
+          : "border border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800"
+      ].join(" ")}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900 p-3 sm:p-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 pr-1">
+          <h3 className="text-sm font-semibold text-slate-100">Recuento por vendedor</h3>
+          <p className="break-words text-xs text-slate-500">
+            Quién vendió qué, cuánto recaudó y el plato que más salió. {subtitle}.
+          </p>
+        </div>
+        {showCsvDownload ? <CsvDownloadButton onClick={handleDownloadCsv} /> : null}
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {modeBtn("day", "Un día")}
+        {modeBtn("period", "Días del período")}
+        {recapMode === "day" ? (
+          <label className="ml-1 inline-flex items-center gap-2 text-xs text-slate-400">
+            <span>Fecha</span>
+            <input
+              type="date"
+              value={recapDayKey}
+              onChange={(e) => onRecapDayKeyChange(e.target.value)}
+              className="h-8 rounded-lg border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100"
+            />
+          </label>
+        ) : null}
+      </div>
+
+      {recapMode === "day" && sellingDays.length > 0 ? (
+        <div className="mb-4">
+          <p className="mb-2 text-xs text-slate-500">Días con ventas</p>
+          <div className="flex flex-wrap gap-1.5">
+            {sellingDays.map((key) => {
+              const active = recapDayKey === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => onRecapDayKeyChange(key)}
+                  className={[
+                    "rounded-md px-2 py-1 text-[11px] font-medium",
+                    active
+                      ? "bg-emerald-600 text-white"
+                      : "border border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800"
+                  ].join(" ")}
+                  title={isoDateLabel(key)}
+                >
+                  {weekdayShortLabel(key)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <p className="text-sm text-slate-400">Cargando recuento…</p>
+      ) : recap.orderCount === 0 ? (
+        <p className="text-sm text-slate-400">No hay ventas cobradas en este recorte.</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+              <p className="text-[11px] uppercase tracking-wider text-slate-400">Total recaudado</p>
+              <p className="mt-1 text-xl font-semibold tabular-nums text-slate-100">
+                {currency(recap.totalRevenue)}
+              </p>
+              <p className="text-xs text-slate-500">{recap.orderCount} pedido(s)</p>
+            </div>
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 sm:col-span-2">
+              <p className="text-[11px] uppercase tracking-wider text-slate-400">Lo que más se vendió</p>
+              <p className="mt-1 text-sm font-semibold text-slate-100">{topDishPhrase(recap.topDish)}</p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {recap.sellers.map((seller) => (
+              <article
+                key={seller.key}
+                className="overflow-hidden rounded-lg border border-slate-800 bg-slate-950/60 p-3"
+              >
+                <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-100">{seller.label}</h4>
+                    <p className="text-xs text-slate-500">
+                      {seller.orderCount} pedido(s) · más vendido: {seller.topDish?.name || "—"}
+                    </p>
+                  </div>
+                  <p className="text-sm font-semibold tabular-nums text-emerald-300">
+                    {currency(seller.collected)}
+                  </p>
+                </div>
+                {seller.dishes.length ? (
+                  <div className="w-full min-w-0 overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+                          <th className="py-1 pr-3 font-medium">Plato</th>
+                          <th className="py-1 pr-3 font-medium tabular-nums">Cant.</th>
+                          <th className="py-1 font-medium tabular-nums">Recaudado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {seller.dishes.map((dish) => (
+                          <tr key={dish.name} className="border-t border-slate-800/80">
+                            <td className="py-1.5 pr-3 text-slate-200">{dish.name}</td>
+                            <td className="py-1.5 pr-3 tabular-nums text-slate-300">{dish.qty}</td>
+                            <td className="py-1.5 tabular-nums text-slate-300">{currency(dish.revenue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">Sin detalle de platos en esos pedidos.</p>
+                )}
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
