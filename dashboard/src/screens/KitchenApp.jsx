@@ -10,6 +10,7 @@ import {
   normalizeOrderStatus,
   orderInKitchenQueue,
   orderPlacedByWaiter,
+  orderObservacionText,
   playNotification,
   tableNumberLabel
 } from "../lib/format";
@@ -162,6 +163,7 @@ export default function KitchenApp({ onLogout }) {
               const fromCustomer = !orderPlacedByWaiter(order);
               const waiterDelivery = isWaiterDeliveryOrder(order);
               const kitchenMeta = kitchenMetaBoxContent(order);
+              const observacion = orderObservacionText(order);
               return (
                 <li
                   key={order.id}
@@ -212,6 +214,12 @@ export default function KitchenApp({ onLogout }) {
                       </li>
                     ))}
                   </ul>
+
+                  {observacion ? (
+                    <p className="mt-2 whitespace-pre-wrap rounded-lg border border-amber-500/40 bg-amber-950/40 px-2 py-1.5 text-sm font-medium text-amber-100">
+                      Observación: {observacion}
+                    </p>
+                  ) : null}
 
                   {kitchenMeta ? (
                     <p className="mt-2 whitespace-pre-wrap rounded-lg border border-slate-700/80 bg-slate-950/50 px-2 py-1.5 text-xs text-slate-300">

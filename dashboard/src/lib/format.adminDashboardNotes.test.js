@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adminDashboardNotesBlock,
   adminShowClienteNroRow,
+  orderObservacionText,
   waiterNameFromMozoNotes
 } from "./format.js";
 
@@ -56,5 +57,15 @@ describe("adminDashboardNotesBlock · pedido mozo", () => {
     expect(out).toContain("Items:");
     expect(out).toContain("Empanada");
     expect(out).toContain("// Mozo: Luis");
+  });
+});
+
+describe("orderObservacionText", () => {
+  it("devuelve el texto recortado", () => {
+    expect(orderObservacionText({ observacion: "  sin mayonesa  " })).toBe("sin mayonesa");
+  });
+  it("devuelve vacío si no hay observación", () => {
+    expect(orderObservacionText({ observacion: null })).toBe("");
+    expect(orderObservacionText({})).toBe("");
   });
 });

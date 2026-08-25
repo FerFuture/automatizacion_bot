@@ -13,7 +13,8 @@ import {
   paymentIsApproved,
   playNotification,
   subtotalForOrder,
-  tableNumberLabel
+  tableNumberLabel,
+  orderObservacionText
 } from "../lib/format";
 
 const HISTORY_HOURS = 18;
@@ -108,6 +109,7 @@ export default function WaiterApp({ onLogout }) {
   const [deliveryWarning, setDeliveryWarning] = useState("");
   const [scheduledDeliveryDate, setScheduledDeliveryDate] = useState(() => localDateInputValue());
   const [scheduledDeliveryTime, setScheduledDeliveryTime] = useState("");
+  const [observacion, setObservacion] = useState("");
   const tableInputRef = useRef(null);
   const addressInputRef = useRef(null);
   const [loading, setLoading] = useState(true);
@@ -367,6 +369,10 @@ export default function WaiterApp({ onLogout }) {
     } else {
       row.table_number = tableNum;
     }
+    const observacionTrimmed = String(observacion || "").trim();
+    if (observacionTrimmed) {
+      row.observacion = observacionTrimmed;
+    }
 
     setSubmitting(true);
     let { data, error: insErr } = await supabase.from("orders").insert(row).select("*").single();
@@ -399,6 +405,7 @@ export default function WaiterApp({ onLogout }) {
       setDeliveryAddress("");
       setScheduledDeliveryDate(localDateInputValue());
       setScheduledDeliveryTime("");
+      setObservacion("");
       setTab("history");
       setToast(deliveryDetails ? "Listo · delivery enviado a cocina" : "Listo · enviado a cocina");
     }
@@ -507,6 +514,12 @@ export default function WaiterApp({ onLogout }) {
             <span className="text-slate-500">Total del pedido</span>
             <span className="text-lg font-bold tabular-nums text-emerald-300">{currency(totalAmount)}</span>
           </p>
+          {String(observacion || "").trim() ? (
+            <p className="text-sm">
+              <span className="text-slate-500">Observación</span>{" "}
+              <span className="font-medium text-amber-100">{String(observacion).trim()}</span>
+            </p>
+          ) : null}
         </div>
       )
     });
@@ -889,6 +902,20 @@ export default function WaiterApp({ onLogout }) {
               )}
             </div>
 
+            <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+              <label className="block text-xs font-medium uppercase tracking-wider text-slate-400">
+                Observación <span className="normal-case tracking-normal text-slate-500">(opcional)</span>
+              </label>
+              <textarea
+                value={observacion}
+                onChange={(e) => setObservacion(e.target.value)}
+                rows={2}
+                maxLength={400}
+                placeholder="Ej: sin mayonesa, punto de cocción, sin cebolla…"
+                className="mt-2 w-full resize-y rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500 focus:border-emerald-500/50"
+              />
+            </div>
+
             {menuItems.length > 0 ? (
               <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
                 <label className="block">
@@ -1043,6 +1070,11 @@ export default function WaiterApp({ onLogout }) {
                         </li>
                       ))}
                     </ul>
+                    {orderObservacionText(order) ? (
+                      <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-950/30 px-2 py-1.5 text-sm text-amber-100">
+                        <span className="font-semibold">Observación:</span> {orderObservacionText(order)}
+                      </p>
+                    ) : null}
                     <p className="mt-2 text-xs text-slate-500">
                       Total: {currency(subtotalForOrder(order))}
                     </p>

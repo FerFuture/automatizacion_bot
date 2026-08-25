@@ -83,6 +83,11 @@ export function waiterNameFromMozoNotes(notes) {
   return m ? m[1].trim() : "";
 }
 
+/** Observación libre del pedido (`orders.observacion`), p. ej. "sin mayonesa". */
+export function orderObservacionText(order) {
+  return String(order?.observacion ?? "").trim();
+}
+
 /** Solo UI (dashboard): estado del pedido en español; la BD no cambia. */
 export function formatOrderStatusLabelEs(orderOrStatus) {
   const st =

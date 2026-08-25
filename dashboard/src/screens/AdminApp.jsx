@@ -20,6 +20,7 @@ import {
   orderFromWaiterPanelNotes,
   orderInKitchenQueue,
   orderKitchenReady,
+  orderObservacionText,
   paymentIsApproved,
   paymentMethodKey,
   playNotification,
@@ -534,7 +535,7 @@ export default function AdminApp({ onLogout }) {
     [sortedOrders]
   );
 
-  function applyOrderFilters(query, filters = orderFilters) {
+  function applyOrderFilters(query, filters = orderFilters, { searchObservacion = true } = {}) {
     let q = query;
     if (filters.status && filters.status !== "all") {
       q = q.eq("status", filters.status);
@@ -556,9 +557,13 @@ export default function AdminApp({ onLogout }) {
     if (filters.search) {
       const term = filters.search.replace(/[%_]/g, "").trim();
       if (term) {
-        q = q.or(
-          `customer_number.ilike.%${term}%,address.ilike.%${term}%,notes.ilike.%${term}%`
-        );
+        const parts = [
+          `customer_number.ilike.%${term}%`,
+          `address.ilike.%${term}%`,
+          `notes.ilike.%${term}%`
+        ];
+        if (searchObservacion) parts.push(`observacion.ilike.%${term}%`);
+        q = q.or(parts.join(","));
       }
     }
     return q;
@@ -594,6 +599,7 @@ export default function AdminApp({ onLogout }) {
           String(order.customer_number || ""),
           String(order.address || ""),
           String(order.notes || ""),
+          String(order.observacion || ""),
           order.table_number != null && order.table_number !== ""
             ? String(order.table_number)
             : ""
@@ -632,7 +638,20 @@ export default function AdminApp({ onLogout }) {
       .range(from, to);
     query = applyOrderFilters(query, filtersForQuery);
 
-    const { data, error: queryError, count } = await query;
+    let { data, error: queryError, count } = await query;
+    if (queryError && /observacion/i.test(queryError.message || "")) {
+      let retryQuery = supabase
+        .from("orders")
+        .select("*", { count: "exact" })
+        .eq("restaurant_id", rid)
+        .order("created_at", { ascending: false })
+        .range(from, to);
+      retryQuery = applyOrderFilters(retryQuery, filtersForQuery, { searchObservacion: false });
+      const retry = await retryQuery;
+      data = retry.data;
+      queryError = retry.error;
+      count = retry.count;
+    }
 
     if (queryError) {
       setError(`Error cargando pedidos: ${queryError.message}`);
@@ -2309,6 +2328,12 @@ export default function AdminApp({ onLogout }) {
                       <span className="text-slate-500">Notas:</span>{" "}
                       {adminDashboardNotesBlock(order) || "-"}
                     </p>
+                    {orderObservacionText(order) ? (
+                      <p className="md:col-span-2">
+                        <span className="text-slate-500">Observación:</span>{" "}
+                        <span className="font-medium text-amber-100">{orderObservacionText(order)}</span>
+                      </p>
+                    ) : null}
                     {deliveryEnabled && shouldShowDeliveryRepartoSection(order) ? (
                       <div
                         className={`md:col-span-2 rounded-lg border px-3 py-2.5 text-sm ${
